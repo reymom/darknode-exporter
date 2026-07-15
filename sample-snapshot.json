@@ -1,0 +1,53 @@
+{
+  "exportedAt": 1721059200000,
+  "hashrate": {
+    "total": [416.07, 415.05, null],
+    "highest": 416.42
+  },
+  "hugepages": [0, 1170],
+  "algo": "rx/0",
+  "uptime": 98,
+  "resources": {
+    "load_average": [2.17, 2.19, 1.85],
+    "hardware_concurrency": 4
+  },
+  "results": {
+    "shares_good": 0,
+    "shares_total": 0
+  },
+  "threads": [208.35, 207.19],
+  "height": 184320,
+  "tip": 184320,
+  "peers": 6,
+  "difficulty": 41000000,
+  "tempC": 54.9,
+  "throttled": "0x0",
+  "memory": {
+    "darkfid": {
+      "current": 3543348019,
+      "high": 3758096384,
+      "max": 4509715660,
+      "peak": 3758096384,
+      "swap": 0
+    },
+    "xmrig": {
+      "current": 2469606195,
+      "high": 2684354560,
+      "max": 2791728742,
+      "peak": 2474639360,
+      "swap": 0
+    },
+    "host": {
+      "total": 8455716864,
+      "used": 6197084160,
+      "available": 2258632704,
+      "swapTotal": 2147483648,
+      "swapUsed": 0
+    }
+  },
+  "wasmTail": [
+    "[WASM] Successfully executed ContractID 0x[redacted] (PoWRewardV1) in 12ms",
+    "[WASM] Successfully executed ContractID 0x[redacted] (PoWRewardV1) in 11ms",
+    "[WASM] Successfully executed ContractID 0x[redacted] (Money) in 8ms"
+  ]
+}

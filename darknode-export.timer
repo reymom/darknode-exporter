@@ -1,0 +1,14 @@
+[Unit]
+Description=DarkFi Pi telemetry export every 60s
+Documentation=https://www.reymom.xyz/darknode
+
+[Timer]
+# Offset a few seconds after the minute so it doesn't collide with other :00 jobs.
+OnBootSec=45
+OnUnitActiveSec=60
+AccuracySec=5
+Persistent=true
+Unit=darknode-export.service
+
+[Install]
+WantedBy=timers.target

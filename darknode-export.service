@@ -1,0 +1,31 @@
+[Unit]
+Description=DarkFi Pi telemetry export (one JSON POST)
+Documentation=https://www.reymom.xyz/darknode
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/darknode-export.env
+ExecStart=/usr/local/bin/darknode-export.sh
+# No wallet access, no extra capabilities. Journal read works if the
+# service user is in group systemd-journal (or you run as root).
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+# Harden a bit — this unit only curls localhost + one outbound HTTPS.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
