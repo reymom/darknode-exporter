@@ -34,8 +34,8 @@ cat <<'NEXT'
 [install] done. Finish setup:
 
   1. sudo nano /etc/darknode-export.env
-       NODE_INGEST_TOKEN=<same value you set in Vercel>
-       INGEST_URL=https://www.reymom.xyz/api/node-ingest
+       NODE_INGEST_TOKEN=<same value set on your receiver>
+       INGEST_URL=https://your-site.example/api/node-ingest
 
   2. test with no POST (prints the JSON it would send):
        DRY_RUN=1 /usr/local/bin/darknode-export.sh | jq .

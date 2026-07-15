@@ -16,25 +16,28 @@
 #   - never expose xmrig / darkfid control planes
 set -euo pipefail
 
+log() { printf '[darknode-export] %s\n' "$*" >&2; }
+
 ENV_FILE="${ENV_FILE:-/etc/darknode-export.env}"
-if [[ -f "$ENV_FILE" ]]; then
-  # shellcheck disable=SC1090
+if [[ -r "$ENV_FILE" ]]; then
+  # shellcheck disable=SC1090,SC1091
   set -a
   # only KEY=VALUE lines; ignore comments/blank
-  # shellcheck disable=SC1091
-  source <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$ENV_FILE" || true)
+  source <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$ENV_FILE" 2>/dev/null || true)
   set +a
+elif [[ -e "$ENV_FILE" ]]; then
+  # exists but not readable (mode 600 owned by root, run as a normal user):
+  # fine for DRY_RUN; the systemd unit reads it via EnvironmentFile.
+  log "note: $ENV_FILE not readable as $(id -un) — env not loaded (ok for DRY_RUN)"
 fi
 
 : "${XMRIG_API:=http://127.0.0.1:18088}"
 : "${DARKFID_UNIT:=darkfid.service}"
 : "${XMRIG_UNIT:=xmrig.service}"
 : "${WASM_TAIL_N:=12}"
-: "${INGEST_URL:=https://www.reymom.xyz/api/node-ingest}"
+: "${INGEST_URL:=}"
 : "${DRY_RUN:=0}"
 : "${CURL_TIMEOUT:=3}"
-
-log() { printf '[darknode-export] %s\n' "$*" >&2; }
 
 need() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -50,8 +53,10 @@ need awk
 # ---------- helpers ----------
 
 redact() {
-  # strip wallet-ish tokens from free-form log lines
+  # strip terminal color codes, then wallet-ish tokens, from free-form log lines
+  local esc=$'\033'
   sed -E \
+    -e "s/${esc}\\[[0-9;]*[a-zA-Z]//g" \
     -e 's/dark1[a-z0-9]{20,}/dark1[redacted]/gi' \
     -e 's/\b[48][A-Za-z0-9]{90,}/[redacted-addr]/g' \
     -e 's/0x[a-fA-F0-9]{40,}/0x[redacted]/g'
@@ -297,6 +302,11 @@ payload="$(
 if [[ "$DRY_RUN" == "1" ]]; then
   printf '%s\n' "$payload"
   exit 0
+fi
+
+if [[ -z "${INGEST_URL:-}" ]]; then
+  log "INGEST_URL is not set (set it in $ENV_FILE)"
+  exit 1
 fi
 
 if [[ -z "${NODE_INGEST_TOKEN:-}" ]]; then
