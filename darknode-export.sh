@@ -207,8 +207,8 @@ fi
 
 wasm_tail_json='[]'
 if wasm_lines="$(
-  journalctl -u "$DARKFID_UNIT" -n 200 --no-pager -o cat 2>/dev/null \
-    | grep -E '\[WASM\] Successfully executed ContractID' \
+  journalctl -u "$DARKFID_UNIT" --since "20 min ago" -n 4000 --no-pager -o cat 2>/dev/null \
+    | grep -E '\[WASM\] Contract log:' \
     | tail -n "$WASM_TAIL_N" \
     | redact \
     || true
