@@ -177,21 +177,22 @@ if [[ -n "${DARKFID_HEIGHT_CMD:-}" ]]; then
 fi
 
 if [[ -z "$height" || -z "$tip" ]]; then
-  # journal scrape — best-effort, last ~5 min
+  # journal scrape — best-effort, last ~30 min
   journal="$(
-    journalctl -u "$DARKFID_UNIT" --since "5 min ago" -o cat --no-pager 2>/dev/null \
-      | tail -n 400 || true
+    journalctl -u "$DARKFID_UNIT" --since "30 min ago" -o cat --no-pager 2>/dev/null \
+      | tail -n 800 || true
   )"
-  # Last known block: 12345 or height=12345
+  # darkfid logs e.g. "Last received block: 24641 - <hash>"
   height="$(
     printf '%s\n' "$journal" \
-      | grep -Eo '(Last known block|height)[=: ]+[0-9]+' \
+      | grep -Eo 'Last received block: [0-9]+' \
       | tail -n1 \
-      | grep -Eo '[0-9]+$' || true
+      | grep -Eo '[0-9]+' || true
   )"
+  # tip: no confirmed numeric log line yet; left best-effort until a healthy sample.
   tip="$(
     printf '%s\n' "$journal" \
-      | grep -Eo '(Most common tip|network tip|tip)[=: ]+[0-9]+' \
+      | grep -Eo '(Most common tip|network tip|synced to)[=: ]+[0-9]+' \
       | tail -n1 \
       | grep -Eo '[0-9]+$' || true
   )"
