@@ -68,6 +68,14 @@ mem_field() {
   systemctl show "$unit" -p "$field" --value 2>/dev/null || echo ""
 }
 
+mem_stat_field() {
+  # one line from the unit's cgroup memory.stat, e.g. anon (working set),
+  # file (reclaimable page cache). Returns bytes, or 0 if unreadable.
+  local unit="$1" field="$2"
+  local f="/sys/fs/cgroup/system.slice/${unit}/memory.stat"
+  [[ -r "$f" ]] && awk -v k="$field" '$1 == k { print $2; exit }' "$f" || echo 0
+}
+
 # systemd prints "infinity" / empty when unset; map those to 0 so the
 # panel can still render a bar against a non-zero high.
 as_bytes() {
@@ -120,12 +128,16 @@ dark_high="$(as_bytes "$(mem_field "$DARKFID_UNIT" MemoryHigh)")"
 dark_max="$(as_bytes "$(mem_field "$DARKFID_UNIT" MemoryMax)")"
 dark_peak="$(as_bytes "$(mem_field "$DARKFID_UNIT" MemoryPeak)")"
 dark_swap="$(as_bytes "$(mem_field "$DARKFID_UNIT" MemorySwapCurrent)")"
+dark_anon="$(mem_stat_field "$DARKFID_UNIT" anon)"
+dark_file="$(mem_stat_field "$DARKFID_UNIT" file)"
 
 xmrig_cur="$(as_bytes "$(mem_field "$XMRIG_UNIT" MemoryCurrent)")"
 xmrig_high="$(as_bytes "$(mem_field "$XMRIG_UNIT" MemoryHigh)")"
 xmrig_max="$(as_bytes "$(mem_field "$XMRIG_UNIT" MemoryMax)")"
 xmrig_peak="$(as_bytes "$(mem_field "$XMRIG_UNIT" MemoryPeak)")"
 xmrig_swap="$(as_bytes "$(mem_field "$XMRIG_UNIT" MemorySwapCurrent)")"
+xmrig_anon="$(mem_stat_field "$XMRIG_UNIT" anon)"
+xmrig_file="$(mem_stat_field "$XMRIG_UNIT" file)"
 
 # host memory from /proc/meminfo (kB → bytes)
 host_total=0
@@ -240,11 +252,15 @@ payload="$(
     --argjson darkMax "$dark_max" \
     --argjson darkPeak "$dark_peak" \
     --argjson darkSwap "$dark_swap" \
+    --argjson darkAnon "$dark_anon" \
+    --argjson darkFile "$dark_file" \
     --argjson xmrigCur "$xmrig_cur" \
     --argjson xmrigHigh "$xmrig_high" \
     --argjson xmrigMax "$xmrig_max" \
     --argjson xmrigPeak "$xmrig_peak" \
     --argjson xmrigSwap "$xmrig_swap" \
+    --argjson xmrigAnon "$xmrig_anon" \
+    --argjson xmrigFile "$xmrig_file" \
     --argjson hostTotal "$host_total" \
     --argjson hostUsed "$host_used" \
     --argjson hostAvail "$host_avail" \
@@ -284,11 +300,11 @@ payload="$(
       memory: {
         darkfid: {
           current: $darkCur, high: $darkHigh, max: $darkMax,
-          peak: $darkPeak, swap: $darkSwap
+          peak: $darkPeak, swap: $darkSwap, anon: $darkAnon, cache: $darkFile
         },
         xmrig: {
           current: $xmrigCur, high: $xmrigHigh, max: $xmrigMax,
-          peak: $xmrigPeak, swap: $xmrigSwap
+          peak: $xmrigPeak, swap: $xmrigSwap, anon: $xmrigAnon, cache: $xmrigFile
         },
         host: {
           total: $hostTotal, used: $hostUsed, available: $hostAvail,
