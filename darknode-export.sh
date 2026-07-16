@@ -197,6 +197,11 @@ if [[ -z "$height" || -z "$tip" ]]; then
       | grep -Eo '[0-9]+' \
       | sort -n | tail -n1 || true
   )"
+  # When synced and following, darkfid stops logging "Most common tip" — the node
+  # IS at the tip, so never let tip sit below the node's own height.
+  if [[ -n "$height" ]] && { [[ -z "$tip" ]] || (( tip < height )); }; then
+    tip="$height"
+  fi
   peers="$(
     printf '%s\n' "$journal" \
       | grep -Eio 'peers?[=: ]+[0-9]+' \
@@ -211,6 +216,7 @@ wasm_tail_json='[]'
 if wasm_lines="$(
   journalctl -u "$DARKFID_UNIT" --since "20 min ago" -n 4000 --no-pager -o cat 2>/dev/null \
     | grep -E '\[WASM\] Contract log:' \
+    | sed -E 's/^[0-9]{2}:[0-9]{2}:[0-9]{2} \[INFO\] \[WASM\] Contract log: //' \
     | tail -n "$WASM_TAIL_N" \
     | redact \
     || true
