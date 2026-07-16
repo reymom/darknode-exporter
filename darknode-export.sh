@@ -182,19 +182,20 @@ if [[ -z "$height" || -z "$tip" ]]; then
     journalctl -u "$DARKFID_UNIT" --since "30 min ago" -o cat --no-pager 2>/dev/null \
       | tail -n 800 || true
   )"
-  # darkfid logs e.g. "Last received block: 24641 - <hash>"
+  # node block: "Last received block: N" (syncing) / "Appended proposal <hash> - N"
+  # (following). Take the highest seen.
   height="$(
     printf '%s\n' "$journal" \
-      | grep -Eo 'Last received block: [0-9]+' \
-      | tail -n1 \
-      | grep -Eo '[0-9]+' || true
+      | grep -Eo '(Last received block: |Appended proposal [a-f0-9]+ - )[0-9]+' \
+      | grep -Eo '[0-9]+$' \
+      | sort -n | tail -n1 || true
   )"
-  # tip: no confirmed numeric log line yet; left best-effort until a healthy sample.
+  # network tip: "Most common tip: N - <hash>"
   tip="$(
     printf '%s\n' "$journal" \
-      | grep -Eo '(Most common tip|network tip|synced to)[=: ]+[0-9]+' \
-      | tail -n1 \
-      | grep -Eo '[0-9]+$' || true
+      | grep -Eo 'Most common tip: [0-9]+' \
+      | grep -Eo '[0-9]+' \
+      | sort -n | tail -n1 || true
   )"
   peers="$(
     printf '%s\n' "$journal" \
