@@ -180,7 +180,9 @@ throttled="${throttled_raw:-}"
 height=""
 tip=""
 peers=""
-difficulty=""
+# xmrig reports the live PoW job difficulty it's mining against — this is the
+# network's own difficulty target, not something specific to xmrig.
+difficulty="$(jq -r '.results.diff_current // empty' <<<"$summary_json" 2>/dev/null || true)"
 
 if [[ -n "${DARKFID_HEIGHT_CMD:-}" ]]; then
   # user-provided one-liner that prints "height tip peers difficulty"
