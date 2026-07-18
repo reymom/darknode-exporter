@@ -1,22 +1,22 @@
 [Unit]
-Description=DarkFi Pi telemetry export (one JSON POST)
+Description=Record darkfid dnet P2P events to local NDJSON history
 Documentation=https://www.reymom.xyz/darknode
-After=network-online.target
-Wants=network-online.target
+After=darkfid.service
+Wants=darkfid.service
 
 [Service]
-Type=oneshot
+Type=simple
 EnvironmentFile=-/etc/darknode-export.env
-ExecStart=/usr/local/bin/darknode-export.sh
-# No wallet access, no extra capabilities. Journal read works if the
-# service user is in group systemd-journal (or you run as root).
+ExecStart=/usr/local/bin/dnet-record.sh
+# darkfid restarts kill the TCP stream — come back, but gently.
+Restart=always
+RestartSec=15
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
-# Local history sink (JSONL, one file/day) — systemd creates /var/log/darknode
-# and grants write access through ProtectSystem=strict.
+# Same hardening posture as the exporter; localhost only, writes only
+# to its log directory.
 LogsDirectory=darknode
-# Harden a bit — this unit only curls localhost + one outbound HTTPS.
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only

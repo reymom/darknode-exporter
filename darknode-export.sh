@@ -34,10 +34,16 @@ fi
 : "${XMRIG_API:=http://127.0.0.1:18088}"
 : "${DARKFID_UNIT:=darkfid.service}"
 : "${XMRIG_UNIT:=xmrig.service}"
+: "${DARKFID_RPC_PORT:=18345}"
+: "${DARKFID_P2P_PORT:=18340}"
 : "${WASM_TAIL_N:=12}"
 : "${INGEST_URL:=}"
 : "${DRY_RUN:=0}"
 : "${CURL_TIMEOUT:=3}"
+# Local history sink (the panel shows now; this accumulates the story).
+# Empty HISTORY_DIR disables it.
+: "${HISTORY_DIR:=/var/log/darknode}"
+: "${HISTORY_MAX_DAYS:=120}"
 
 need() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -173,9 +179,12 @@ fi
 throttled="${throttled_raw:-}"
 
 # ---------- darkfid height / tip / peers ----------
-# Prefer an optional local helper if present; else scrape journal lines that
-# DarkFi already logs ("Last known block", "Most common tip"). Never talk to
-# a remote peer for this number.
+# Order of preference:
+#   1. DARKFID_HEIGHT_CMD — user-provided one-liner override.
+#   2. darkfid's own JSON-RPC on localhost (line-delimited JSON over raw TCP,
+#      not HTTP — hence /dev/tcp, not curl).
+#   3. Journal scrape — the original best-effort fallback.
+# Never talk to a remote peer for these numbers.
 
 height=""
 tip=""
@@ -184,10 +193,34 @@ peers=""
 # network's own difficulty target, not something specific to xmrig.
 difficulty="$(jq -r '.results.diff_current // empty' <<<"$summary_json" 2>/dev/null || true)"
 
+rpc_call() {
+  # rpc_call PORT METHOD → one JSON-RPC response line from darkfid, or empty.
+  timeout "$CURL_TIMEOUT" bash -c '
+    exec 3<>"/dev/tcp/127.0.0.1/$1" || exit 1
+    printf "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"%s\",\"params\":[]}\n" "$2" >&3
+    IFS= read -r line <&3
+    printf "%s\n" "$line"
+  ' _ "$1" "$2" 2>/dev/null || true
+}
+
 if [[ -n "${DARKFID_HEIGHT_CMD:-}" ]]; then
   # user-provided one-liner that prints "height tip peers difficulty"
   # shellcheck disable=SC2086
   read -r height tip peers difficulty < <(eval "$DARKFID_HEIGHT_CMD" 2>/dev/null || true)
+fi
+
+if [[ -z "$height" ]]; then
+  height="$(rpc_call "$DARKFID_RPC_PORT" blockchain.last_confirmed_block \
+    | jq -r '.result[0] // empty' 2>/dev/null || true)"
+fi
+if [[ -z "$tip" ]]; then
+  # best_fork_next_block_height = the height the next block would land on,
+  # i.e. the best fork's tip (unconfirmed proposals included) is next - 1.
+  next="$(rpc_call "$DARKFID_RPC_PORT" blockchain.best_fork_next_block_height \
+    | jq -r '.result // empty' 2>/dev/null || true)"
+  if [[ "$next" =~ ^[0-9]+$ ]] && ((next > 0)); then
+    tip=$((next - 1))
+  fi
 fi
 
 if [[ -z "$height" || -z "$tip" ]]; then
@@ -198,30 +231,38 @@ if [[ -z "$height" || -z "$tip" ]]; then
   )"
   # node block: "Last received block: N" (syncing) / "Appended proposal <hash> - N"
   # (following). Take the highest seen.
-  height="$(
-    printf '%s\n' "$journal" \
-      | grep -Eo '(Last received block: |Appended proposal [a-f0-9]+ - )[0-9]+' \
-      | grep -Eo '[0-9]+$' \
-      | sort -n | tail -n1 || true
-  )"
-  # network tip: "Most common tip: N - <hash>"
-  tip="$(
-    printf '%s\n' "$journal" \
-      | grep -Eo 'Most common tip: [0-9]+' \
-      | grep -Eo '[0-9]+' \
-      | sort -n | tail -n1 || true
-  )"
-  # When synced and following, darkfid stops logging "Most common tip" — the node
-  # IS at the tip, so never let tip sit below the node's own height.
-  if [[ -n "$height" ]] && { [[ -z "$tip" ]] || (( tip < height )); }; then
-    tip="$height"
+  if [[ -z "$height" ]]; then
+    height="$(
+      printf '%s\n' "$journal" \
+        | grep -Eo '(Last received block: |Appended proposal [a-f0-9]+ - )[0-9]+' \
+        | grep -Eo '[0-9]+$' \
+        | sort -n | tail -n1 || true
+    )"
   fi
-  peers="$(
-    printf '%s\n' "$journal" \
-      | grep -Eio 'peers?[=: ]+[0-9]+' \
-      | tail -n1 \
-      | grep -Eo '[0-9]+$' || true
-  )"
+  # network tip: "Most common tip: N - <hash>"
+  if [[ -z "$tip" ]]; then
+    tip="$(
+      printf '%s\n' "$journal" \
+        | grep -Eo 'Most common tip: [0-9]+' \
+        | grep -Eo '[0-9]+' \
+        | sort -n | tail -n1 || true
+    )"
+  fi
+fi
+# The proposal tip can transiently sit at/below the confirmed height around a
+# reorg; and when following quietly there may be no tip signal at all. The node
+# is at the tip in both cases — never let tip sit below height.
+if [[ -n "$height" ]] && { [[ -z "$tip" ]] || ((tip < height)); }; then
+  tip="$height"
+fi
+
+# peers = established TCP sessions on the P2P port (both directions). Count
+# only — never IPs (DarkFi is an anonymity network; the panel stays blind).
+if [[ -z "$peers" ]]; then
+  peers="$(ss -Htn state established \
+    "( dport = :${DARKFID_P2P_PORT} or sport = :${DARKFID_P2P_PORT} )" 2>/dev/null \
+    | wc -l | tr -d " " || true)"
+  [[ "$peers" == "0" ]] && peers=""
 fi
 
 # ---------- WASM tail ----------
@@ -328,6 +369,19 @@ payload="$(
 if [[ "$DRY_RUN" == "1" ]]; then
   printf '%s\n' "$payload"
   exit 0
+fi
+
+# ---------- local history (before the POST — outages are data too) ----------
+# One JSONL file per day. Compress yesterday's files opportunistically and
+# expire beyond HISTORY_MAX_DAYS. ~1 sample/min ≈ ~0.5 MB/day uncompressed.
+if [[ -n "$HISTORY_DIR" ]]; then
+  if mkdir -p "$HISTORY_DIR" 2>/dev/null && [[ -w "$HISTORY_DIR" ]]; then
+    printf '%s\n' "$payload" >>"$HISTORY_DIR/snapshots-$(date +%F).jsonl"
+    find "$HISTORY_DIR" -name 'snapshots-*.jsonl' -mtime +0 -exec gzip -q {} \; 2>/dev/null || true
+    find "$HISTORY_DIR" -name 'snapshots-*.jsonl.gz' -mtime +"$HISTORY_MAX_DAYS" -delete 2>/dev/null || true
+  else
+    log "history dir $HISTORY_DIR not writable — skipping local history"
+  fi
 fi
 
 if [[ -z "${INGEST_URL:-}" ]]; then

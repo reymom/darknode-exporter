@@ -79,6 +79,25 @@ budget for `darkfid` and `xmrig` (current / high / max / swap) plus host memory;
 SoC temperature and throttle state; sync height/tip; and an optional tail of
 `[WASM]` log lines.
 
+## Local history
+
+The exporter also appends every snapshot to `/var/log/darknode/snapshots-YYYY-MM-DD.jsonl`
+(one line per minute, gzipped after a day, expired after `HISTORY_MAX_DAYS`,
+default 120). This happens *before* the POST, so history accumulates even when
+the site is unreachable — outages are data too. Disable with `HISTORY_DIR=""`.
+
+`dnet-record.sh` (+ `dnet-record.service`) is a companion long-running service
+that subscribes to darkfid's own **dnet** P2P instrumentation stream over the
+localhost management RPC and appends every event (per-channel send/recv,
+peer-discovery states, slot lifecycle) to `/var/log/darknode/dnet-YYYY-MM-DD.jsonl`.
+Raw dnet events carry peer addresses, so **they never leave the Pi** — only
+aggregates may be published.
+
+Height / tip / peers are now read from darkfid's localhost JSON-RPC
+(`blockchain.last_confirmed_block`, `blockchain.best_fork_next_block_height`)
+and an `ss` count of established P2P sessions, with the journal scrape kept as
+fallback.
+
 ## Privacy
 
 - The wallet address is never included in the snapshot.
