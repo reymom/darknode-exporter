@@ -286,7 +286,7 @@ fi
 exported_at=$(($(date +%s) * 1000))
 
 payload="$(
-  jq -n \
+  jq -cn \
     --argjson exportedAt "$exported_at" \
     --argjson summary "$summary_json" \
     --argjson threads "$threads_json" \
