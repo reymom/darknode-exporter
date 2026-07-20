@@ -322,24 +322,24 @@ payload="$(
         if ($summary.hashrate? != null) then {
           total: ($summary.hashrate.total // [null,null,null]),
           highest: ($summary.hashrate.highest // null)
-        } else empty end
+        } else null end
       ),
-      hugepages: ($summary.hugepages // empty),
-      algo: ($summary.algo // empty),
-      uptime: ($summary.uptime // empty),
+      hugepages: ($summary.hugepages // null),
+      algo: ($summary.algo // null),
+      uptime: ($summary.uptime // null),
       resources: (
         if ($summary.resources? != null) then {
           load_average: $summary.resources.load_average,
           hardware_concurrency: $summary.resources.hardware_concurrency
-        } else empty end
+        } else null end
       ),
       results: (
         if ($summary.results? != null) then {
           shares_good: $summary.results.shares_good,
           shares_total: $summary.results.shares_total
-        } else empty end
+        } else null end
       ),
-      threads: (if ($threads | length) > 0 then $threads else empty end),
+      threads: (if ($threads | length) > 0 then $threads else null end),
       memory: {
         darkfid: {
           current: $darkCur, high: $darkHigh, max: $darkMax,
@@ -354,7 +354,7 @@ payload="$(
           swapTotal: $swapTotal, swapUsed: $swapUsed
         }
       },
-      wasmTail: (if ($wasmTail | length) > 0 then $wasmTail else empty end)
+      wasmTail: (if ($wasmTail | length) > 0 then $wasmTail else null end)
     }
     + (if $tempC != "" then {tempC: ($tempC|tonumber)} else {} end)
     + (if $throttled != "" then {throttled: $throttled} else {} end)
@@ -365,6 +365,16 @@ payload="$(
     | with_entries(select(.value != null))
   '
 )"
+
+# A jq object with a bare `empty` in any value position collapses to an empty
+# stream, so a single missing optional field (e.g. wasmTail when the node is
+# quiet) would yield an empty payload. All optional values now resolve to null
+# and are stripped by with_entries above; this guard is the backstop so we
+# never record a blank line to history or POST an empty body (HTTP 400).
+if [[ -z "$payload" ]]; then
+  log "payload assembly produced empty output — refusing to record or POST"
+  exit 1
+fi
 
 if [[ "$DRY_RUN" == "1" ]]; then
   printf '%s\n' "$payload"
