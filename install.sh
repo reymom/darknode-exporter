@@ -16,6 +16,14 @@ fi
 say "collector → /usr/local/bin/darknode-export.sh"
 sudo install -m 755 "$HERE/darknode-export.sh" /usr/local/bin/darknode-export.sh
 
+say "smoke test: collector must emit a non-empty JSON object"
+if ! DRY_RUN=1 /usr/local/bin/darknode-export.sh 2>/dev/null \
+     | jq -e 'type == "object" and (keys | length > 0)' >/dev/null; then
+  echo "[install] FATAL: collector produced empty or invalid JSON — refusing to continue." >&2
+  echo "[install] inspect with: DRY_RUN=1 /usr/local/bin/darknode-export.sh | jq ." >&2
+  exit 1
+fi
+
 say "systemd units → /etc/systemd/system/"
 sudo install -m 644 "$HERE/darknode-export.service" /etc/systemd/system/darknode-export.service
 sudo install -m 644 "$HERE/darknode-export.timer" /etc/systemd/system/darknode-export.timer

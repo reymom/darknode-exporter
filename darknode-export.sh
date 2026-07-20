@@ -384,11 +384,15 @@ fi
 # ---------- local history (before the POST — outages are data too) ----------
 # One JSONL file per day. Compress yesterday's files opportunistically and
 # expire beyond HISTORY_MAX_DAYS. ~1 sample/min ≈ ~0.5 MB/day uncompressed.
+# Rotation here also covers the dnet-*.jsonl files written by dnet-record: that
+# service is long-lived and only rotates at startup, so without this its daily
+# files never get compressed. `-mtime +0` only touches files older than a day,
+# never dnet-record's actively-written current file.
 if [[ -n "$HISTORY_DIR" ]]; then
   if mkdir -p "$HISTORY_DIR" 2>/dev/null && [[ -w "$HISTORY_DIR" ]]; then
     printf '%s\n' "$payload" >>"$HISTORY_DIR/snapshots-$(date +%F).jsonl"
-    find "$HISTORY_DIR" -name 'snapshots-*.jsonl' -mtime +0 -exec gzip -q {} \; 2>/dev/null || true
-    find "$HISTORY_DIR" -name 'snapshots-*.jsonl.gz' -mtime +"$HISTORY_MAX_DAYS" -delete 2>/dev/null || true
+    find "$HISTORY_DIR" \( -name 'snapshots-*.jsonl' -o -name 'dnet-*.jsonl' \) -mtime +0 -exec gzip -q {} \; 2>/dev/null || true
+    find "$HISTORY_DIR" \( -name 'snapshots-*.jsonl.gz' -o -name 'dnet-*.jsonl.gz' \) -mtime +"$HISTORY_MAX_DAYS" -delete 2>/dev/null || true
   else
     log "history dir $HISTORY_DIR not writable — skipping local history"
   fi
