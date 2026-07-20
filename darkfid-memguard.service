@@ -1,5 +1,5 @@
 [Unit]
-Description=Gracefully restart darkfid before its anon heap hits the memory ceiling
+Description=Restart darkfid before its OOM wall; watch (log-only) for sled disconnect-growth
 After=darkfid.service
 
 [Service]
