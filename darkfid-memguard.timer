@@ -1,0 +1,10 @@
+[Unit]
+Description=Check darkfid anon memory every 5 minutes
+
+[Timer]
+OnBootSec=120
+OnUnitActiveSec=300
+AccuracySec=15
+
+[Install]
+WantedBy=timers.target

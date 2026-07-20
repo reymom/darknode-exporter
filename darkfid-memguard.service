@@ -1,0 +1,7 @@
+[Unit]
+Description=Gracefully restart darkfid before its anon heap hits the memory ceiling
+After=darkfid.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/darkfid-memguard.sh
