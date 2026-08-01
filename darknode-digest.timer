@@ -1,0 +1,14 @@
+[Unit]
+Description=Publish the darknode history digest daily
+
+[Timer]
+# After the nightly rotation has gzipped yesterday, and well away from the
+# hours the memory cycle tends to hit its wall.
+OnCalendar=*-*-* 06:20:00
+# The Pi is not always up at 06:20; catch up on the next boot instead of
+# silently skipping a day.
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

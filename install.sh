@@ -24,9 +24,14 @@ if ! DRY_RUN=1 /usr/local/bin/darknode-export.sh 2>/dev/null \
   exit 1
 fi
 
+say "digest generator → /usr/local/bin/darknode-digest.py"
+sudo install -m 755 "$HERE/darknode-digest.py" /usr/local/bin/darknode-digest.py
+
 say "systemd units → /etc/systemd/system/"
 sudo install -m 644 "$HERE/darknode-export.service" /etc/systemd/system/darknode-export.service
 sudo install -m 644 "$HERE/darknode-export.timer" /etc/systemd/system/darknode-export.timer
+sudo install -m 644 "$HERE/darknode-digest.service" /etc/systemd/system/darknode-digest.service
+sudo install -m 644 "$HERE/darknode-digest.timer" /etc/systemd/system/darknode-digest.timer
 
 if [[ -f /etc/darknode-export.env ]]; then
   say "/etc/darknode-export.env already exists — leaving it untouched"
@@ -55,5 +60,14 @@ cat <<'NEXT'
   4. enable the 60s timer:
        sudo systemctl enable --now darknode-export.timer
        systemctl list-timers | grep darknode
+
+  5. history digest (daily). Add to /etc/darknode-export.env:
+       HISTORY_INGEST_URL=https://your-site.example/api/node-history
+     Until that is set the digest is computed and not published, which is the
+     right behaviour while the endpoint is still being deployed.
+
+       /usr/local/bin/darknode-digest.py --dry-run     # check the numbers
+       sudo systemctl start darknode-digest.service    # one real publish
+       sudo systemctl enable --now darknode-digest.timer
 
 NEXT

@@ -1,0 +1,26 @@
+[Unit]
+Description=Aggregate the local darknode history into one digest and publish it
+Documentation=https://www.reymom.xyz/darknode/history
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/darknode-export.env
+ExecStart=/usr/local/bin/darknode-digest.py
+# Reads the whole JSONL store; nice it so it never competes with darkfid.
+Nice=15
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+ReadOnlyPaths=/var/log/darknode
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
