@@ -26,11 +26,28 @@ WALL_MIB="${MEMGUARD_WALL_MIB:-4100}"
 #   2. a fresh from-zero initial sync also runs anon high, so a naive anon
 #      threshold would restart mid-sync (a restart loop).
 # So for now we only LOG when anon crosses a watch line, together with the
-# process uptime (low uptime => probably initial sync, not the disease). Once the
-# fixed exporter captures a real outage we calibrate MEMGUARD_ANON_WATCH_MIB from
-# the recorded per-service anon series and decide whether to promote this to an
-# actual restart trigger (gated on uptime past the initial sync).
-ANON_WATCH_MIB="${MEMGUARD_ANON_WATCH_MIB:-2500}"
+# process uptime (low uptime => probably initial sync, not the disease).
+#
+# 2026-08-02 — CALIBRATED, and the answer to "promote this to a restart
+# trigger?" is no. Fourteen days of recorded per-service anon (18,380 samples,
+# three real wall episodes) say anon parks on a hard plateau at 3905 MiB:
+# p95 3901, p99 3905, p99.5 3905. That is a ceiling, not a distribution, and
+# there is no room to stand above it:
+#
+#     threshold    samples over    noise    warning before the wall
+#     3850 MiB          1410       84.9%    21–359 min
+#     3900 MiB          1087       86.1%    20–359 min
+#     3950 MiB            24        0%      2–3 min
+#
+# Either it fires constantly during healthy operation or it fires three minutes
+# before Trigger 1 would have anyway. So Trigger 1 stays the only restart path
+# (2 for 2 in the recorded window, zero sled corruption).
+#
+# The watch line moves 2500 -> 3900 purely to stop the logging being noise: at
+# 2500 it crossed ~45 min after every restart and then logged every 5 minutes
+# forever, which is an excellent way to bury a signal you actually care about.
+# At 3900 a line in this journal means the node is genuinely near the ceiling.
+ANON_WATCH_MIB="${MEMGUARD_ANON_WATCH_MIB:-3900}"
 
 [[ -r "$CUR" ]] || exit 0
 cur_mib=$(( $(cat "$CUR") / 1024 / 1024 ))
