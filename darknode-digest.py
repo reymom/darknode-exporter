@@ -40,6 +40,9 @@ CEILING_MIB = 4000
 RESTART_DROP_MIB = 2000
 # height frozen at least this long, with peers, = a stall.
 STALL_MS = 30 * 60_000
+# Silence longer than this in the dnet stream = the recorder was down, not the
+# overlay being quiet. Matches DNET_STALL_S in dnet-record.sh.
+DNET_COVERAGE_GAP_MS = 300_000
 
 
 def load_jsonl(store: str, prefix: str) -> list[dict]:
@@ -231,7 +234,18 @@ def overlay_aggregates(store: str) -> dict | None:
     ev.sort(key=lambda e: e["rx"])
 
     t0, t1 = ev[0]["rx"], ev[-1]["rx"]
-    hours = max((t1 - t0) / 3_600_000, 0.01)
+
+    # Recorded hours are the hours actually covered, NOT the span from first to
+    # last event. The recorder was dead for twelve days in July, and dividing by
+    # the span turned 57 disconnects/h into 7 — a rate diluted by time when
+    # nothing could have been observed. Sum only the intervals where the stream
+    # was demonstrably alive; anything longer than the stall threshold is a hole.
+    covered_ms = sum(
+        b["rx"] - a["rx"]
+        for a, b in zip(ev, ev[1:])
+        if 0 <= b["rx"] - a["rx"] <= DNET_COVERAGE_GAP_MS
+    )
+    hours = max(covered_ms / 3_600_000, 0.01)
 
     addrs = set()
     cmds: dict[str, list[int]] = defaultdict(lambda: [0, 0])
@@ -262,18 +276,36 @@ def overlay_aggregates(store: str) -> dict | None:
             if 0 <= dt < 30_000:
                 rtts.append(dt)
 
+    # Holes in the stream, so nothing below gets measured across one.
+    holes = [
+        (a["rx"], b["rx"])
+        for a, b in zip(ev, ev[1:])
+        if b["rx"] - a["rx"] > DNET_COVERAGE_GAP_MS
+    ]
+
+    def spans_hole(t_from: int, t_to: int) -> bool:
+        return any(h0 < t_to and h1 > t_from for h0, h1 in holes)
+
     # outbound slot lifecycle → completed session durations
     opened: dict[object, int] = {}
     sessions: list[float] = []
     for e in ev:
         kind = e.get("event")
+        if kind == "recorder_start":
+            # A fresh subscription knows nothing about what was open before it.
+            opened.clear()
+            continue
         if kind not in ("outbound_slot_connected", "outbound_slot_disconnected"):
             continue
         slot = (e.get("info") or {}).get("slot", "?")
         if kind == "outbound_slot_connected":
             opened[slot] = e["rx"]
         elif slot in opened:
-            sessions.append((e["rx"] - opened.pop(slot)) / 1000)
+            start = opened.pop(slot)
+            # A session that appears to straddle a hole is an artefact of the
+            # recorder restarting, not a peer that stayed up for twelve days.
+            if not spans_hole(start, e["rx"]):
+                sessions.append((e["rx"] - start) / 1000)
 
     rtts.sort()
     sessions.sort()
