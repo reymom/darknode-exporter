@@ -409,10 +409,28 @@ def post(digest: dict, url: str, token: str) -> None:
         raise SystemExit(1)
 
 
+def default_url() -> str:
+    """The digest endpoint is the sibling of the snapshot one.
+
+    The Pi is already configured with INGEST_URL and NODE_INGEST_TOKEN for the
+    live panel, and the digest goes to the same host with the same token — so
+    derive it rather than making the operator maintain a second copy of the
+    same URL. HISTORY_INGEST_URL still overrides, for the odd case where the
+    two really do differ.
+    """
+    override = os.environ.get("HISTORY_INGEST_URL", "").strip()
+    if override:
+        return override
+    base = os.environ.get("INGEST_URL", "").strip()
+    if not base:
+        return ""
+    return base.rsplit("/", 1)[0] + "/node-history" if "/" in base else ""
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--store", default=os.environ.get("HISTORY_DIR", "/var/log/darknode"))
-    ap.add_argument("--url", default=os.environ.get("HISTORY_INGEST_URL", ""))
+    ap.add_argument("--url", default=default_url())
     ap.add_argument("--token", default=os.environ.get("NODE_INGEST_TOKEN", ""))
     ap.add_argument("--out")
     ap.add_argument("--dry-run", action="store_true")
@@ -439,11 +457,10 @@ def main() -> None:
     if args.dry_run:
         return
     if not args.url or not args.token:
-        # Not an error: the timer is installed before the site endpoint exists,
-        # and starts publishing the day HISTORY_INGEST_URL is set. Failing here
-        # would just paint the journal red for no reason.
+        # Not an error: without INGEST_URL/NODE_INGEST_TOKEN there is nowhere to
+        # publish, and a red journal would suggest a fault where there is none.
         print(
-            "[digest] HISTORY_INGEST_URL / NODE_INGEST_TOKEN not set — computed but not published",
+            "[digest] no INGEST_URL / NODE_INGEST_TOKEN — computed but not published",
             file=sys.stderr,
         )
         return

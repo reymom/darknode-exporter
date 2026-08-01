@@ -61,10 +61,8 @@ cat <<'NEXT'
        sudo systemctl enable --now darknode-export.timer
        systemctl list-timers | grep darknode
 
-  5. history digest (daily). Add to /etc/darknode-export.env:
-       HISTORY_INGEST_URL=https://your-site.example/api/node-history
-     Until that is set the digest is computed and not published, which is the
-     right behaviour while the endpoint is still being deployed.
+  5. history digest (daily) — no extra config, it reuses the token and derives
+     its endpoint from INGEST_URL:
 
        /usr/local/bin/darknode-digest.py --dry-run     # check the numbers
        sudo systemctl start darknode-digest.service    # one real publish
