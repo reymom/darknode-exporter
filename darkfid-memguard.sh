@@ -142,10 +142,12 @@ fi
 
 prev_high=""
 fail_streak=0
+armed_pid=""
 if [[ -r "$STATE" ]]; then
-  read -r prev_high fail_streak < "$STATE" 2>/dev/null || { prev_high=""; fail_streak=0; }
+  read -r prev_high fail_streak armed_pid < "$STATE" 2>/dev/null || { prev_high=""; fail_streak=0; armed_pid=""; }
   [[ "$prev_high"   =~ ^[0-9]+$ ]] || prev_high=""
   [[ "$fail_streak" =~ ^[0-9]+$ ]] || fail_streak=0
+  [[ "$armed_pid"   =~ ^[0-9]+$ ]] || armed_pid=""
 fi
 
 # First run after a boot or a restart has no baseline, and the counter is
@@ -169,13 +171,25 @@ if timeout "$RPC_TIMEOUT" bash -c '
     ' _ "$RPC_PORT" >/dev/null 2>&1; then
   rpc_ok=1
   fail_streak=0
+  armed_pid="$pid"     # this process has served RPC at least once — now armable
 else
   fail_streak=$(( fail_streak + 1 ))
 fi
 
-printf '%s %s\n' "$high_now" "$fail_streak" > "$STATE" 2>/dev/null || true
+printf '%s %s %s\n' "$high_now" "$fail_streak" "$armed_pid" > "$STATE" 2>/dev/null || true
+
+# Arming. A node that has never answered RPC since it started is booting or
+# doing a from-zero initial sync, and a heavy sync runs anon high while the page
+# cache gets squeezed — i.e. it can satisfy the corroboration test honestly, and
+# restarting it would produce exactly the mid-sync restart loop the trigger-2
+# note warned about. So the trigger only arms once RPC has been observed working
+# for THIS pid. That makes trigger 3 strictly about regression from a serving
+# state, which is the limbo signature: it served for two days, then stopped.
+armed=0
+[[ -n "$armed_pid" && -n "$pid" && "$armed_pid" == "$pid" ]] && armed=1
 
 if (( rpc_ok == 0 )) \
+   && (( armed == 1 )) \
    && (( fail_streak >= RPC_FAIL_RUNS )) \
    && (( up_s > MIN_UPTIME_S )) \
    && { (( high_delta >= HIGH_DELTA_MIN )) || (( file_mib <= FILE_COLLAPSE_MIB )); }; then
@@ -190,5 +204,5 @@ fi
 # firing. One line per run only while RPC is actually failing.
 if (( rpc_ok == 0 )); then
   logger -t darkfid-memguard \
-    "RPC probe failed (${fail_streak}/${RPC_FAIL_RUNS}), high +${high_delta}, cache ${file_mib}MiB, anon ${anon_mib}MiB, uptime ${up_s}s"
+    "RPC probe failed (${fail_streak}/${RPC_FAIL_RUNS}), armed=${armed}, high +${high_delta}, cache ${file_mib}MiB, anon ${anon_mib}MiB, uptime ${up_s}s"
 fi
