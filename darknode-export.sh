@@ -258,11 +258,23 @@ fi
 
 # peers = established TCP sessions on the P2P port (both directions). Count
 # only — never IPs (DarkFi is an anonymity network; the panel stays blind).
+#
+# 2026-08-08: this used to end with `[[ "$peers" == "0" ]] && peers=""`, which
+# meant a genuine zero was published as an ABSENT field — byte-identical to "the
+# exporter could not measure". The panel reads absence as no-data, so the one
+# event the peer instrument exists to catch was the one event it could not
+# express, and /darknode/history has been asserting "never lost the network"
+# from a series that is incapable of containing a zero. Zero is now reported as
+# zero. Failure to measure is still absence, but it has to be a real failure:
+# `ss | wc -l` returns 0 both when there are no sessions and when ss errors out,
+# so the two are separated on ss's exit status rather than on its output.
 if [[ -z "$peers" ]]; then
-  peers="$(ss -Htn state established \
-    "( dport = :${DARKFID_P2P_PORT} or sport = :${DARKFID_P2P_PORT} )" 2>/dev/null \
-    | wc -l | tr -d " " || true)"
-  [[ "$peers" == "0" ]] && peers=""
+  if ss_out="$(ss -Htn state established \
+        "( dport = :${DARKFID_P2P_PORT} or sport = :${DARKFID_P2P_PORT} )" 2>/dev/null)"; then
+    peers="$(printf '%s' "$ss_out" | grep -c . || true)"
+  else
+    peers=""   # could not measure — distinct from measured zero
+  fi
 fi
 
 # ---------- WASM tail ----------
