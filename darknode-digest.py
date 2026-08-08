@@ -252,15 +252,41 @@ def overlay_aggregates(store: str) -> dict | None:
     pending: dict[int, int] = {}
     rtts: list[float] = []
 
+    # --- per-peer, pseudonymised -------------------------------------------
+    # Peers are published as P1..Pn ordered by FIRST APPEARANCE, never as a hash
+    # of the address. A truncated hash would be reversible here: the candidate
+    # address space of a DarkFi node's peers is small enough to enumerate, so
+    # anyone holding a list of suspected addresses could confirm membership by
+    # hashing it. A first-seen index leaks nothing beyond "there were n of them",
+    # and is stable across runs because the digest recomputes over the whole
+    # retained history each time.
+    first_seen: dict[str, int] = {}
+    p_msgs: dict[str, list[int]] = defaultdict(lambda: [0, 0])   # [send, recv]
+    p_rtts: dict[str, list[float]] = defaultdict(list)
+    p_sessions: dict[str, list[float]] = defaultdict(list)
+    dialed: set[str] = set()
+    cid_addr: dict[object, str] = {}
+
     for e in ev:
         info = e.get("info") or {}
         chan = info.get("chan") or {}
         addr = chan.get("addr")
+        kind = e.get("event")
+        # the outbound slot events carry the address directly, not under chan
+        if kind in ("outbound_slot_connecting", "outbound_slot_connected"):
+            slot_addr = info.get("addr")
+            if slot_addr:
+                dialed.add(slot_addr)
+                addrs.add(slot_addr)
+                first_seen.setdefault(slot_addr, e["rx"])
         if addr:
             addrs.add(addr)
+            first_seen.setdefault(addr, e["rx"])
+            if kind in ("send", "recv"):
+                p_msgs[addr][0 if kind == "send" else 1] += 1
         cmd = info.get("cmd")
         if cmd:
-            cmds[cmd][0 if e.get("event") == "send" else 1] += 1
+            cmds[cmd][0 if kind == "send" else 1] += 1
         cid, tns = chan.get("id"), info.get("time")
         if cid is None or tns is None:
             continue
@@ -268,13 +294,18 @@ def overlay_aggregates(store: str) -> dict | None:
             tns = int(tns)
         except (TypeError, ValueError):
             continue
-        if e.get("event") == "send" and cmd == "ping":
+        if kind == "send" and cmd == "ping":
             pending[cid] = tns
-        elif e.get("event") == "recv" and cmd == "pong" and cid in pending:
+            if addr:
+                cid_addr[cid] = addr
+        elif kind == "recv" and cmd == "pong" and cid in pending:
             dt = (tns - pending.pop(cid)) / 1e6
+            owner = cid_addr.pop(cid, addr)
             # a pong matched across a reconnect is not a round trip
             if 0 <= dt < 30_000:
                 rtts.append(dt)
+                if owner:
+                    p_rtts[owner].append(dt)
 
     # Holes in the stream, so nothing below gets measured across one.
     holes = [
@@ -297,15 +328,22 @@ def overlay_aggregates(store: str) -> dict | None:
             continue
         if kind not in ("outbound_slot_connected", "outbound_slot_disconnected"):
             continue
-        slot = (e.get("info") or {}).get("slot", "?")
+        info = e.get("info") or {}
+        slot = info.get("slot", "?")
         if kind == "outbound_slot_connected":
-            opened[slot] = e["rx"]
+            # keep the address with the slot: the matching disconnect event
+            # carries only the slot, so this is the sole point where a session
+            # can be attributed to a peer.
+            opened[slot] = (e["rx"], info.get("addr"))
         elif slot in opened:
-            start = opened.pop(slot)
+            start, s_addr = opened.pop(slot)
             # A session that appears to straddle a hole is an artefact of the
             # recorder restarting, not a peer that stayed up for twelve days.
             if not spans_hole(start, e["rx"]):
-                sessions.append((e["rx"] - start) / 1000)
+                dur = (e["rx"] - start) / 1000
+                sessions.append(dur)
+                if s_addr:
+                    p_sessions[s_addr].append(dur)
 
     rtts.sort()
     sessions.sort()
@@ -332,7 +370,43 @@ def overlay_aggregates(store: str) -> dict | None:
             {"cmd": c, "send": v[0], "recv": v[1]}
             for c, v in sorted(cmds.items(), key=lambda kv: -(kv[1][0] + kv[1][1]))[:24]
         ],
+        "peers": _per_peer(addrs, first_seen, p_msgs, p_rtts, p_sessions, dialed),
     }
+
+
+def _per_peer(addrs, first_seen, p_msgs, p_rtts, p_sessions, dialed):
+    """Per-peer overlay stats under a first-seen pseudonym. Addresses drop here.
+
+    The split this exposes is the point of it: peers the node DIALED have a
+    session lifecycle (connect -> disconnect on an outbound slot), and peers
+    that dialed US have none at all, because darkfid emits no inbound slot
+    events. Every session and churn number in this digest is therefore
+    outbound-only, and on the recorded window the two never-dialed peers carry
+    about a third of all wire traffic. Aggregates alone hide that entirely.
+    """
+    total = sum(sum(v) for v in p_msgs.values()) or 1
+    out = []
+    for n, addr in enumerate(sorted(addrs, key=lambda a: first_seen.get(a, 0)), 1):
+        send, recv = p_msgs.get(addr, [0, 0])
+        ss = sorted(p_sessions.get(addr, []))
+        rt = sorted(p_rtts.get(addr, []))
+        out.append(
+            {
+                "n": n,
+                "dialed": addr in dialed,
+                "firstSeen": first_seen.get(addr, 0),
+                "send": send,
+                "recv": recv,
+                "sharePct": round(100 * (send + recv) / total, 2),
+                "sessions": len(ss),
+                "upS": round(sum(ss), 1),
+                "medianS": round(pctl(ss, 0.5), 1) if ss else 0,
+                "longestS": round(ss[-1], 1) if ss else 0,
+                "rttMedianMs": round(pctl(rt, 0.5), 1) if rt else None,
+                "rttSamples": len(rt),
+            }
+        )
+    return out
 
 
 def build_digest(store: str) -> dict:
