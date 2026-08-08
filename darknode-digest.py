@@ -343,7 +343,9 @@ def overlay_aggregates(store: str) -> dict | None:
                 dur = (e["rx"] - start) / 1000
                 sessions.append(dur)
                 if s_addr:
-                    p_sessions[s_addr].append(dur)
+                    # (start_ms, duration_s) — the churn charts need when, not
+                    # just how long.
+                    p_sessions[s_addr].append((start, dur))
 
     rtts.sort()
     sessions.sort()
@@ -371,6 +373,58 @@ def overlay_aggregates(store: str) -> dict | None:
             for c, v in sorted(cmds.items(), key=lambda kv: -(kv[1][0] + kv[1][1]))[:24]
         ],
         "peers": _per_peer(addrs, first_seen, p_msgs, p_rtts, p_sessions, dialed),
+        **_churn(t0, t1, p_sessions, first_seen, holes),
+    }
+
+
+CHURN_BUCKETS = 480          # ~= the series budget; step falls out of the window
+RECENT_H = 6                 # raw-session detail window
+RECENT_CAP = 1500            # hard cap on emitted intervals
+
+
+def _churn(t0, t1, p_starts, first_seen, holes):
+    """Session-opening density per peer, plus a recent raw-interval window.
+
+    Two scales, because one is dishonest: over a 490 h window a median 33 s
+    session is 0.02 px wide, so the full span can only be drawn as density.
+    The detail window carries real intervals and is deliberately the MOST
+    RECENT six hours rather than the busiest — this is a live panel, and if the
+    node had no sessions last night that is the news, not something to hide by
+    panning to a prettier window.
+    """
+    order = {a: n for n, a in enumerate(sorted(first_seen, key=lambda a: first_seen[a]), 1)}
+    span = max(t1 - t0, 1)
+    step = max(int(span / CHURN_BUCKETS), 60_000)
+    nb = int(span / step) + 1
+
+    lanes = []
+    for addr, ivals in p_starts.items():
+        if not ivals:
+            continue
+        counts = [0] * nb
+        for s, _ in ivals:
+            counts[min(nb - 1, max(0, int((s - t0) / step)))] += 1
+        lanes.append({"n": order.get(addr, 0), "counts": counts})
+    lanes.sort(key=lambda l: l["n"])
+
+    r_from = t1 - RECENT_H * 3_600_000
+    recent = []
+    for addr, ivals in p_starts.items():
+        for s, d in ivals:
+            if s + d * 1000 >= r_from:
+                recent.append([order.get(addr, 0), s - r_from, round(d, 1)])
+    recent.sort(key=lambda r: r[1])
+    truncated = len(recent) > RECENT_CAP
+
+    return {
+        "churn": {"t0": t0, "step": step, "buckets": nb, "lanes": lanes},
+        "recent": {
+            "from": r_from,
+            "to": t1,
+            "truncated": truncated,
+            "sessions": recent[:RECENT_CAP],
+        },
+        "holes": [[a, b] for a, b in holes][-40:],
     }
 
 
@@ -388,7 +442,7 @@ def _per_peer(addrs, first_seen, p_msgs, p_rtts, p_sessions, dialed):
     out = []
     for n, addr in enumerate(sorted(addrs, key=lambda a: first_seen.get(a, 0)), 1):
         send, recv = p_msgs.get(addr, [0, 0])
-        ss = sorted(p_sessions.get(addr, []))
+        ss = sorted(d for _, d in p_sessions.get(addr, []))
         rt = sorted(p_rtts.get(addr, []))
         out.append(
             {
