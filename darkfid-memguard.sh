@@ -90,6 +90,40 @@ RPC_FAIL_RUNS="${MEMGUARD_RPC_FAIL_RUNS:-3}"      # timer is every 5 min => 15 m
 MIN_UPTIME_S="${MEMGUARD_MIN_UPTIME_S:-1800}"
 HIGH_DELTA_MIN="${MEMGUARD_HIGH_DELTA_MIN:-1000}"
 FILE_COLLAPSE_MIB="${MEMGUARD_FILE_COLLAPSE_MIB:-16}"
+
+# --- Trigger 4: the never-armed bailout (RESTARTS, budgeted) ---
+# 2026-09-16. The 09-12 outage ran for 2.5 days with trigger 3 logging a perfect
+# diagnosis every 5 minutes and never firing, because `armed` stayed 0: darkfid
+# came back from a restart straight into limbo and never served RPC on that pid,
+# so the interlock below could never latch. The guard meant to prevent a restart
+# loop had locked out the only path that could act. Measured that day:
+#
+#     RPC probe failed (13/3), armed=0, high +991239, cache 0MiB,
+#     anon 3651MiB, uptime 3712s
+#
+# Every threshold satisfied with margin. armed=0 vetoed all of it.
+#
+# Two fixes, both needed:
+#
+#   1. Arm on PROGRESS, not only on RPC. The RPC probe is one way to observe the
+#      node doing its job; height advancing is another, and it is the one the
+#      exporter has leaned on for 60 days (journal scrape, same grep patterns as
+#      darknode-export.sh). A node whose height moves is working, whether or not
+#      its RPC answers. This matters because the whole failure mode is the RPC
+#      being the thing that stops answering — arming on it alone is circular.
+#
+#   2. A budgeted bailout for the never-armed case. If the node has never been
+#      seen working on this pid, is up well past a sync's grace period, its
+#      height has not moved in all that time, and the corroboration holds, then
+#      restart it — but COUNT the attempts and give up loudly. That is the
+#      restart-loop protection the interlock was reaching for, expressed as a
+#      budget rather than as a latch that can never open.
+#
+# Why 45 min: a legitimate from-zero initial sync advances height continuously,
+# so the "height frozen" test already excludes it; the uptime floor is only a
+# second belt for the first minutes after boot when no baseline exists yet.
+BAILOUT_MIN_UPTIME_S="${MEMGUARD_BAILOUT_MIN_UPTIME_S:-2700}"
+BAILOUT_MAX="${MEMGUARD_BAILOUT_MAX:-3}"
 EVENTS="/sys/fs/cgroup/system.slice/${UNIT}/memory.events"
 STATE="${MEMGUARD_STATE:-/run/darkfid-memguard.state}"
 
@@ -143,11 +177,48 @@ fi
 prev_high=""
 fail_streak=0
 armed_pid=""
+prev_height=""
+prev_height_ts=""
+bailout_pid=""
+bailout_n=0
 if [[ -r "$STATE" ]]; then
-  read -r prev_high fail_streak armed_pid < "$STATE" 2>/dev/null || { prev_high=""; fail_streak=0; armed_pid=""; }
-  [[ "$prev_high"   =~ ^[0-9]+$ ]] || prev_high=""
-  [[ "$fail_streak" =~ ^[0-9]+$ ]] || fail_streak=0
-  [[ "$armed_pid"   =~ ^[0-9]+$ ]] || armed_pid=""
+  # Record grew on 2026-09-16; a short (pre-upgrade) line leaves the new fields
+  # empty, which reads as "no baseline" and only ever makes triggers less eager.
+  read -r prev_high fail_streak armed_pid prev_height prev_height_ts bailout_pid bailout_n \
+    < "$STATE" 2>/dev/null || true
+  [[ "$prev_high"      =~ ^[0-9]+$ ]] || prev_high=""
+  [[ "$fail_streak"    =~ ^[0-9]+$ ]] || fail_streak=0
+  [[ "$armed_pid"      =~ ^[0-9]+$ ]] || armed_pid=""
+  [[ "$prev_height"    =~ ^[0-9]+$ ]] || prev_height=""
+  [[ "$prev_height_ts" =~ ^[0-9]+$ ]] || prev_height_ts=""
+  [[ "$bailout_pid"    =~ ^[0-9]+$ ]] || bailout_pid=""
+  [[ "$bailout_n"      =~ ^[0-9]+$ ]] || bailout_n=0
+fi
+
+# Height from the journal, NOT from the RPC — see the trigger-4 note. Same grep
+# patterns as darknode-export.sh so the two agree on what "height" means.
+now_ts="$(date +%s)"
+height_now="$(
+  journalctl -u "$UNIT" --since "30 min ago" -o cat --no-pager 2>/dev/null \
+    | tail -n 800 \
+    | grep -Eo '(Last received block: |Appended proposal [a-f0-9]+ - )[0-9]+' \
+    | grep -Eo '[0-9]+$' \
+    | sort -n | tail -n1 || true
+)"
+[[ "$height_now" =~ ^[0-9]+$ ]] || height_now=""
+height_known=0
+[[ -n "$height_now" ]] && height_known=1
+
+# How long has height been stuck? Only meaningful once we have a baseline.
+height_frozen_s=0
+if [[ -n "$height_now" && -n "$prev_height" && -n "$prev_height_ts" ]]; then
+  if (( height_now > prev_height )); then
+    prev_height="$height_now"; prev_height_ts="$now_ts"      # progress: reset
+  else
+    height_frozen_s=$(( now_ts - prev_height_ts ))
+  fi
+elif [[ -n "$height_now" ]]; then
+  prev_height="$height_now"; prev_height_ts="$now_ts"
 fi
 
 # First run after a boot or a restart has no baseline, and the counter is
@@ -176,7 +247,22 @@ else
   fail_streak=$(( fail_streak + 1 ))
 fi
 
-printf '%s %s %s\n' "$high_now" "$fail_streak" "$armed_pid" > "$STATE" 2>/dev/null || true
+# 2026-09-16: height advancing is the other proof the node is doing its job, and
+# unlike the RPC it kept working through every recorded outage. Arm on it too,
+# so a node that syncs but whose RPC never answers is still protected.
+if [[ -n "$pid" ]] && (( height_frozen_s == 0 )) && [[ -n "$prev_height_ts" && "$prev_height_ts" == "$now_ts" ]]; then
+  armed_pid="$pid"
+fi
+
+# Reset the bailout budget when the pid changes — the count is per process
+# lineage, not for the lifetime of the box.
+if [[ -n "$pid" && "$bailout_pid" != "$pid" ]]; then
+  bailout_pid=""; bailout_n=0
+fi
+
+printf '%s %s %s %s %s %s %s\n' \
+  "$high_now" "$fail_streak" "$armed_pid" "${prev_height:-}" "${prev_height_ts:-}" \
+  "${bailout_pid:-}" "$bailout_n" > "$STATE" 2>/dev/null || true
 
 # Arming. A node that has never answered RPC since it started is booting or
 # doing a from-zero initial sync, and a heavy sync runs anon high while the page
@@ -188,10 +274,19 @@ printf '%s %s %s\n' "$high_now" "$fail_streak" "$armed_pid" > "$STATE" 2>/dev/nu
 armed=0
 [[ -n "$armed_pid" && -n "$pid" && "$armed_pid" == "$pid" ]] && armed=1
 
+# 2026-09-16: `armed` can now latch on height progress as well as on RPC, which
+# means a from-zero initial sync can reach this test armed — and a heavy sync
+# runs anon high with the cache squeezed, so it would satisfy the corroboration
+# honestly and get restarted mid-sync. That is the exact loop the original
+# interlock existed to prevent, so the functional test has to be explicit: do
+# not restart a node whose height is still moving. If height cannot be scraped
+# at all the clause is skipped, which restores the pre-2026-09-16 behaviour
+# rather than silently disabling the trigger.
 if (( rpc_ok == 0 )) \
    && (( armed == 1 )) \
    && (( fail_streak >= RPC_FAIL_RUNS )) \
    && (( up_s > MIN_UPTIME_S )) \
+   && { (( height_known == 0 )) || (( height_frozen_s > 0 )); } \
    && { (( high_delta >= HIGH_DELTA_MIN )) || (( file_mib <= FILE_COLLAPSE_MIB )); }; then
   logger -t darkfid-memguard \
     "THROTTLE-LIMBO: RPC dead ${fail_streak} runs, memory.events:high +${high_delta} since last run, cache ${file_mib}MiB, anon ${anon_mib}MiB, total ${cur_mib}MiB, uptime ${up_s}s — graceful restart"
@@ -200,9 +295,34 @@ if (( rpc_ok == 0 )) \
   exit 0
 fi
 
+# Trigger 4: never armed. The node has not been observed working on this pid at
+# all — not by RPC, not by height moving — it is well past a sync's grace period,
+# and the corroboration holds. Restart on a budget, then stop and say so.
+if (( rpc_ok == 0 )) \
+   && (( armed == 0 )) \
+   && (( fail_streak >= RPC_FAIL_RUNS )) \
+   && (( up_s > BAILOUT_MIN_UPTIME_S )) \
+   && (( height_frozen_s > BAILOUT_MIN_UPTIME_S )) \
+   && { (( high_delta >= HIGH_DELTA_MIN )) || (( file_mib <= FILE_COLLAPSE_MIB )); }; then
+  if (( bailout_n < BAILOUT_MAX )); then
+    bailout_n=$(( bailout_n + 1 ))
+    logger -t darkfid-memguard \
+      "NEVER-ARMED BAILOUT ${bailout_n}/${BAILOUT_MAX}: never observed serving on pid ${pid}, height stuck at ${height_now:-?} for ${height_frozen_s}s, high +${high_delta}, cache ${file_mib}MiB, anon ${anon_mib}MiB, uptime ${up_s}s — graceful restart"
+    printf '%s %s %s %s %s %s %s\n' \
+      "$high_now" 0 "" "" "" "$pid" "$bailout_n" > "$STATE" 2>/dev/null || true
+    systemctl restart "$UNIT"
+    exit 0
+  fi
+  # Budget spent. Restarting again would be the loop the interlock feared, and
+  # this is no longer something a restart fixes. Say so once per run, loudly.
+  logger -t darkfid-memguard -p daemon.err \
+    "NEVER-ARMED BAILOUT EXHAUSTED (${bailout_n}/${BAILOUT_MAX}): ${UNIT} will not start serving. height stuck at ${height_now:-?} for ${height_frozen_s}s, anon ${anon_mib}MiB, cache ${file_mib}MiB. NOT restarting — needs a human."
+  exit 0
+fi
+
 # Log the near-miss so the journal shows the trigger reasoning, not just its
 # firing. One line per run only while RPC is actually failing.
 if (( rpc_ok == 0 )); then
   logger -t darkfid-memguard \
-    "RPC probe failed (${fail_streak}/${RPC_FAIL_RUNS}), armed=${armed}, high +${high_delta}, cache ${file_mib}MiB, anon ${anon_mib}MiB, uptime ${up_s}s"
+    "RPC probe failed (${fail_streak}/${RPC_FAIL_RUNS}), armed=${armed}, high +${high_delta}, cache ${file_mib}MiB, anon ${anon_mib}MiB, height ${height_now:-?} frozen ${height_frozen_s}s, uptime ${up_s}s"
 fi
