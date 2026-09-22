@@ -249,6 +249,20 @@ if [[ -z "$height" || -z "$tip" ]]; then
     )"
   fi
 fi
+# While syncing, the RPC only knows the node's own chain, so height and tip move
+# together and the panel read 100% through a whole 7 h resync (21-S). The
+# network's height is only in the log, as "Most common tip: N", printed at the
+# start of each sync round — which from genesis is hours before the round ends,
+# hence the wide window. Take it whenever it is ahead; once the node has caught
+# up, its own tip passes it and this is a no-op.
+net_tip="$(
+  journalctl -u "$DARKFID_UNIT" --since "24 hours ago" -o cat --no-pager \
+    -g 'Most common tip: [0-9]+' -n 1 2>/dev/null \
+    | grep -Eo 'Most common tip: [0-9]+' | grep -Eo '[0-9]+' | tail -n1 || true
+)"
+if [[ "$net_tip" =~ ^[0-9]+$ ]] && { [[ -z "$tip" ]] || ((net_tip > tip)); }; then
+  tip="$net_tip"
+fi
 # The proposal tip can transiently sit at/below the confirmed height around a
 # reorg; and when following quietly there may be no tip signal at all. The node
 # is at the tip in both cases — never let tip sit below height.
