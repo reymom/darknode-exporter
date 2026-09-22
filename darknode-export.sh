@@ -4,7 +4,7 @@
 #
 # Sources (all localhost / local tools):
 #   - xmrig HTTP API 127.0.0.1 (restricted, no token — read-only)
-#   - systemctl show … MemoryCurrent/High/Max
+#   - systemctl show … MemoryCurrent; cgroup memory.high/max for the live limits
 #   - vcgencmd measure_temp / get_throttled
 #   - free -b (host memory)
 #   - journalctl -u darkfid (optional WASM tail)
@@ -93,6 +93,23 @@ as_bytes() {
   fi
 }
 
+cg_limit() {
+  # The limit the kernel is enforcing right now, read from the cgroup itself.
+  # systemctl show reports the configured value, which is not the same thing
+  # after a live `echo … > memory.high`: on 21-S the export said 4.5 G all night
+  # while the cgroup had no soft limit at all. "max" = unlimited → 0, as above.
+  local unit="$1" file="$2" field="$3" v=""
+  local f="/sys/fs/cgroup/system.slice/${unit}/${file}"
+  [[ -r "$f" ]] && v="$(<"$f")"
+  if [[ -z "$v" ]]; then
+    as_bytes "$(mem_field "$unit" "$field")"
+  elif [[ "$v" == "max" ]]; then
+    echo 0
+  else
+    echo "$v"
+  fi
+}
+
 json_null_if_empty() {
   local v="${1:-}"
   if [[ -z "$v" ]]; then
@@ -130,16 +147,16 @@ threads_json="$(
 # ---------- cgroup memory ----------
 
 dark_cur="$(as_bytes "$(mem_field "$DARKFID_UNIT" MemoryCurrent)")"
-dark_high="$(as_bytes "$(mem_field "$DARKFID_UNIT" MemoryHigh)")"
-dark_max="$(as_bytes "$(mem_field "$DARKFID_UNIT" MemoryMax)")"
+dark_high="$(cg_limit "$DARKFID_UNIT" memory.high MemoryHigh)"
+dark_max="$(cg_limit "$DARKFID_UNIT" memory.max MemoryMax)"
 dark_peak="$(as_bytes "$(mem_field "$DARKFID_UNIT" MemoryPeak)")"
 dark_swap="$(as_bytes "$(mem_field "$DARKFID_UNIT" MemorySwapCurrent)")"
 dark_anon="$(mem_stat_field "$DARKFID_UNIT" anon)"
 dark_file="$(mem_stat_field "$DARKFID_UNIT" file)"
 
 xmrig_cur="$(as_bytes "$(mem_field "$XMRIG_UNIT" MemoryCurrent)")"
-xmrig_high="$(as_bytes "$(mem_field "$XMRIG_UNIT" MemoryHigh)")"
-xmrig_max="$(as_bytes "$(mem_field "$XMRIG_UNIT" MemoryMax)")"
+xmrig_high="$(cg_limit "$XMRIG_UNIT" memory.high MemoryHigh)"
+xmrig_max="$(cg_limit "$XMRIG_UNIT" memory.max MemoryMax)"
 xmrig_peak="$(as_bytes "$(mem_field "$XMRIG_UNIT" MemoryPeak)")"
 xmrig_swap="$(as_bytes "$(mem_field "$XMRIG_UNIT" MemorySwapCurrent)")"
 xmrig_anon="$(mem_stat_field "$XMRIG_UNIT" anon)"
