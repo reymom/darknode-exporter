@@ -211,7 +211,11 @@ def find_episodes(snaps: list[Snap]) -> list[dict]:
         eps.append(cur)
 
     # --- restarts (anon collapse) + how fast the chain caught up ----------
-    prev_anon = None
+    # The note says only what was measured. It used to read "before the cgroup
+    # wall", on the belief that every restart was memguard's. Thirty of them were
+    # the Pi rebooting under the old digest, and some were sled panicking. A
+    # collapse seen across a recording gap cannot be attributed at all.
+    prev_anon = prev_t = None
     for i, r in enumerate(snaps):
         a = r.anon
         if a is None:
@@ -235,10 +239,14 @@ def find_episodes(snaps: list[Snap]) -> list[dict]:
                     "from": t,
                     "to": t,
                     **({"blocksRecovered": int(recovered)} if recovered else {}),
-                    "note": "before the cgroup wall",
+                    "note": (
+                        f"across a {round((t - prev_t) / 60_000)}-min recording gap"
+                        if t - prev_t > GAP_MS
+                        else f"anon {round(prev_anon)} → {round(a_mib)} MiB"
+                    ),
                 }
             )
-        prev_anon = a_mib
+        prev_anon, prev_t = a_mib, r.t
 
     # --- stalls: height frozen while peers are up ------------------------
     h_rows = [r for r in snaps if r.height is not None]
