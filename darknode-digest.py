@@ -45,6 +45,26 @@ STALL_MS = 30 * 60_000
 # overlay being quiet. Matches DNET_STALL_S in dnet-record.sh.
 DNET_COVERAGE_GAP_MS = 300_000
 
+# The zoomed series: the most recent stretch at a resolution where a sync or a
+# restart is visible, which the whole-window series averages away.
+ZOOM_MS = 48 * 3_600_000
+
+GIB = 1024 * MIB
+# Windows where the recorded limits were wrong. Until 22-S the exporter read
+# them from `systemctl show`, which reports the configured value, and on the
+# night of 21-S they were raised live in the cgroup to profile the fjall sync.
+# Times are from the session log, good to a few minutes: (from, to, high, max)
+# in bytes, 0 = unlimited, same convention as the exporter.
+LIMIT_OVERRIDES = [
+    (1790029620_000, 1790030700_000, 6 * GIB, 6656 * MIB),  # 21-S 22:27Z  6 G / 6.5 G
+    (1790030700_000, 1790054840_000, 0, 7 * GIB),           # 22:45Z → reboot 05:27Z, no soft limit
+]
+
+# Things that changed the node, drawn on the memory chart.
+MARKERS = [
+    {"at": 1790005834_000, "label": "sled → fjall"},  # fjall darkfid up, 21-S 15:50:34Z
+]
+
 
 def store_files(store: str, prefix: str) -> list[str]:
     return sorted(glob.glob(os.path.join(store, f"{prefix}-*.jsonl*")))
@@ -95,6 +115,9 @@ class Snap:
         self.temp = r.get("tempC")
         self.thr = r.get("throttled")
         self.hr = ((r.get("hashrate") or {}).get("total") or [None])[0]
+        for t_from, t_to, high, mx in LIMIT_OVERRIDES:
+            if t_from <= self.t < t_to:
+                self.high, self.max = high, mx
 
 
 def load_snaps(store: str) -> list[Snap]:
@@ -124,6 +147,10 @@ def build_series(snaps: list[Snap], t0: int, t1: int) -> dict:
     # round up to the next whole minute so bucket edges stay legible
     step = max(60_000, int((raw_step + 59_999) // 60_000) * 60_000)
     n = int(span // step) + 1
+    # a span that divides exactly gives MAX_BUCKETS + 1, which the site rejects
+    if n > MAX_BUCKETS:
+        step += 60_000
+        n = int(span // step) + 1
 
     buckets: list[list[Snap]] = [[] for _ in range(n)]
     for r in snaps:
@@ -155,6 +182,15 @@ def build_series(snaps: list[Snap], t0: int, t1: int) -> dict:
     load = rnd(series(lambda r: r.load), 2)
     temp = rnd(series(lambda r: r.temp), 1)
 
+    # Limits are a step function, so a bucket takes its highest value rather
+    # than an average no limit ever had. Unlimited (0) breaks the line.
+    def limit(fn):
+        out = []
+        for b in buckets:
+            vals = [v for v in (fn(r) for r in b) if v]
+            out.append(round(max(vals) / MIB) if vals else None)
+        return out
+
     return {
         "step": step,
         "t0": t0,
@@ -164,6 +200,8 @@ def build_series(snaps: list[Snap], t0: int, t1: int) -> dict:
         "lag": lag,
         "load": load,
         "tempC": temp,
+        "high": limit(lambda r: r.high),
+        "max": limit(lambda r: r.max),
     }
 
 
@@ -594,6 +632,10 @@ def build_digest(store: str) -> dict:
         },
         "limits": limits,
         "series": build_series(snaps, t0, t1),
+        "zoom": build_series(
+            [r for r in snaps if r.t >= t1 - ZOOM_MS], max(t0, t1 - ZOOM_MS), t1
+        ),
+        "markers": [m for m in MARKERS if t0 <= m["at"] <= t1],
         "episodes": find_episodes(snaps),
         "chain": {
             "firstHeight": heights[0] if heights else 0,
