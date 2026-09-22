@@ -10,6 +10,12 @@ EnvironmentFile=-/etc/darknode-export.env
 ExecStart=/usr/local/bin/darknode-digest.py
 # Reads the whole JSONL store; nice it so it never competes with darkfid.
 Nice=15
+# Nice is CPU only. Without a memory ceiling the old whole-store version grew
+# until RAM and swap were gone and the hardware watchdog rebooted the Pi, most
+# mornings from mid-August. The streaming version peaks ~190 MiB on 65 days of
+# history; past this it dies alone in its cgroup instead of taking the node down.
+MemoryMax=512M
+MemorySwapMax=0
 IOSchedulingClass=idle
 NoNewPrivileges=yes
 ProtectSystem=strict
