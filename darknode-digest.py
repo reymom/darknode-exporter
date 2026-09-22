@@ -375,6 +375,7 @@ def overlay_aggregates(store: str) -> dict | None:
     cmds: dict[str, list[int]] = defaultdict(lambda: [0, 0])
     pending: dict[int, int] = {}
     rtts: list[float] = []
+    rtt_at: list[tuple[int, float]] = []   # (rx of the pong, round trip in ms)
 
     # --- per-peer, pseudonymised -------------------------------------------
     # Peers are published as P1..Pn ordered by FIRST APPEARANCE, never as a hash
@@ -462,6 +463,7 @@ def overlay_aggregates(store: str) -> dict | None:
                 # a pong matched across a reconnect is not a round trip
                 if 0 <= dt < 30_000:
                     rtts.append(dt)
+                    rtt_at.append((rx, dt))
                     if owner:
                         p_rtts[owner].append(dt)
 
@@ -496,6 +498,7 @@ def overlay_aggregates(store: str) -> dict | None:
         ],
         "peers": _per_peer(addrs, first_seen, p_msgs, p_rtts, p_sessions, dialed),
         **_churn(t0, t1, p_sessions, first_seen, holes),
+        "rttSeries": _rtt_series(t0, t1, rtt_at),
     }
 
 
@@ -548,6 +551,33 @@ def _churn(t0, t1, p_starts, first_seen, holes):
         },
         "holes": [[a, b] for a, b in holes][-40:],
     }
+
+
+def _rtt_series(t0, t1, rtt_at):
+    """Round-trip time over the window, median and p90 per bucket.
+
+    Same buckets as the churn lanes, so the two read against each other. The
+    per-peer medians only say what a peer was like on average; this shows
+    whether the network got slower or faster over the weeks. A bucket with no
+    ping answered is None: the recorder was blind, or nobody was connected.
+    """
+    span = max(t1 - t0, 1)
+    step = max(int(span / CHURN_BUCKETS), 60_000)
+    nb = int(span / step) + 1
+    buckets: list[list[float]] = [[] for _ in range(nb)]
+    for t, v in rtt_at:
+        buckets[min(nb - 1, max(0, int((t - t0) / step)))].append(v)
+    median, p90, samples = [], [], []
+    for b in buckets:
+        if b:
+            b.sort()
+            median.append(round(pctl(b, 0.5), 1))
+            p90.append(round(pctl(b, 0.9), 1))
+        else:
+            median.append(None)
+            p90.append(None)
+        samples.append(len(b))
+    return {"t0": t0, "step": step, "median": median, "p90": p90, "samples": samples}
 
 
 def _per_peer(addrs, first_seen, p_msgs, p_rtts, p_sessions, dialed):
