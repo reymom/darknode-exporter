@@ -22,6 +22,7 @@ import glob
 import gzip
 import json
 import os
+import resource
 import statistics
 import sys
 import urllib.error
@@ -45,23 +46,64 @@ STALL_MS = 30 * 60_000
 DNET_COVERAGE_GAP_MS = 300_000
 
 
-def load_jsonl(store: str, prefix: str) -> list[dict]:
-    rows: list[dict] = []
-    for path in sorted(glob.glob(os.path.join(store, f"{prefix}-*.jsonl*"))):
-        opener = gzip.open if path.endswith(".gz") else open
-        try:
-            with opener(path, "rt") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        rows.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        continue  # a torn last line during rotation is not fatal
-        except OSError as exc:
-            print(f"[digest] skipping {path}: {exc}", file=sys.stderr)
-    return rows
+def store_files(store: str, prefix: str) -> list[str]:
+    return sorted(glob.glob(os.path.join(store, f"{prefix}-*.jsonl*")))
+
+
+def iter_jsonl(path: str):
+    """One parsed row at a time. Never hold a whole file of dicts.
+
+    The first version loaded the entire store into one list. With 55 days of
+    dnet events (~200k a day) that no longer fits in 8 GB: from mid-August the
+    daily run filled RAM and swap, the Pi stopped petting its hardware watchdog
+    and rebooted — nearly every morning, for five weeks (knowledge-os §61).
+    """
+    opener = gzip.open if path.endswith(".gz") else open
+    try:
+        with opener(path, "rt") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    yield json.loads(line)
+                except json.JSONDecodeError:
+                    continue  # a torn last line during rotation is not fatal
+    except (OSError, EOFError) as exc:
+        print(f"[digest] skipping {path}: {exc}", file=sys.stderr)
+
+
+class Snap:
+    """The dozen fields the digest reads from a snapshot, and nothing else."""
+
+    __slots__ = ("t", "dark", "anon", "cache", "current", "high", "max",
+                 "peers", "tip", "height", "load", "temp", "thr", "hr")
+
+    def __init__(self, r: dict):
+        m = (r.get("memory") or {}).get("darkfid") or {}
+        self.t = r["exportedAt"]
+        self.dark = bool(m)
+        self.anon = m.get("anon")
+        self.cache = m.get("cache")
+        self.current = m.get("current")
+        self.high = m.get("high")
+        self.max = m.get("max")
+        self.peers = r.get("peers")
+        self.tip = r.get("tip")
+        self.height = r.get("height")
+        self.load = ((r.get("resources") or {}).get("load_average") or [None])[0]
+        self.temp = r.get("tempC")
+        self.thr = r.get("throttled")
+        self.hr = ((r.get("hashrate") or {}).get("total") or [None])[0]
+
+
+def load_snaps(store: str) -> list[Snap]:
+    return [
+        Snap(r)
+        for path in store_files(store, "snapshots")
+        for r in iter_jsonl(path)
+        if isinstance(r, dict) and "exportedAt" in r
+    ]
 
 
 def pctl(sorted_vals: list[float], q: float) -> float:
@@ -75,7 +117,7 @@ def mean(vals):
     return sum(vals) / len(vals) if vals else None
 
 
-def build_series(snaps: list[dict], t0: int, t1: int) -> dict:
+def build_series(snaps: list[Snap], t0: int, t1: int) -> dict:
     """Downsample to <= MAX_BUCKETS, keeping the step a round number of minutes."""
     span = max(t1 - t0, 60_000)
     raw_step = span / MAX_BUCKETS
@@ -83,9 +125,9 @@ def build_series(snaps: list[dict], t0: int, t1: int) -> dict:
     step = max(60_000, int((raw_step + 59_999) // 60_000) * 60_000)
     n = int(span // step) + 1
 
-    buckets: list[list[dict]] = [[] for _ in range(n)]
+    buckets: list[list[Snap]] = [[] for _ in range(n)]
     for r in snaps:
-        i = int((r["exportedAt"] - t0) // step)
+        i = int((r.t - t0) // step)
         if 0 <= i < n:
             buckets[i].append(r)
 
@@ -99,19 +141,19 @@ def build_series(snaps: list[dict], t0: int, t1: int) -> dict:
     def rnd(vals, digits):
         return [None if v is None else round(v, digits) for v in vals]
 
-    anon = rnd(series(lambda r: (r.get("memory", {}).get("darkfid", {}).get("anon") or 0) / MIB), 0)
-    cache = rnd(series(lambda r: (r.get("memory", {}).get("darkfid", {}).get("cache") or 0) / MIB), 0)
-    peers = rnd(series(lambda r: r.get("peers")), 1)
+    anon = rnd(series(lambda r: (r.anon or 0) / MIB), 0)
+    cache = rnd(series(lambda r: (r.cache or 0) / MIB), 0)
+    peers = rnd(series(lambda r: r.peers), 1)
     lag = rnd(
         series(
-            lambda r: (r["tip"] - r["height"])
-            if r.get("tip") is not None and r.get("height") is not None
+            lambda r: (r.tip - r.height)
+            if r.tip is not None and r.height is not None
             else None
         ),
         1,
     )
-    load = rnd(series(lambda r: (r.get("resources", {}).get("load_average") or [None])[0]), 2)
-    temp = rnd(series(lambda r: r.get("tempC")), 1)
+    load = rnd(series(lambda r: r.load), 2)
+    temp = rnd(series(lambda r: r.temp), 1)
 
     return {
         "step": step,
@@ -125,7 +167,7 @@ def build_series(snaps: list[dict], t0: int, t1: int) -> dict:
     }
 
 
-def find_episodes(snaps: list[dict]) -> list[dict]:
+def find_episodes(snaps: list[Snap]) -> list[dict]:
     eps: list[dict] = []
 
     # --- gaps in the recording -------------------------------------------
@@ -134,14 +176,14 @@ def find_episodes(snaps: list[dict]) -> list[dict]:
     # chain, and publishing the one as the other would be a lie about the node.
     gap_spans: list[tuple[int, int]] = []
     for a, b in zip(snaps, snaps[1:]):
-        d = b["exportedAt"] - a["exportedAt"]
+        d = b.t - a.t
         if d > GAP_MS:
-            gap_spans.append((a["exportedAt"], b["exportedAt"]))
+            gap_spans.append((a.t, b.t))
             eps.append(
                 {
                     "kind": "gap",
-                    "from": a["exportedAt"],
-                    "to": b["exportedAt"],
+                    "from": a.t,
+                    "to": b.t,
                     "note": "no snapshots recorded",
                 }
             )
@@ -152,8 +194,8 @@ def find_episodes(snaps: list[dict]) -> list[dict]:
     # --- memory-ceiling excursions ---------------------------------------
     cur = None
     for r in snaps:
-        c = (r.get("memory", {}).get("darkfid", {}).get("current") or 0) / MIB
-        t = r["exportedAt"]
+        c = (r.current or 0) / MIB
+        t = r.t
         if c > CEILING_MIB:
             if cur is None:
                 cur = {"kind": "memory_ceiling", "from": t, "to": t, "peakMiB": c}
@@ -171,13 +213,13 @@ def find_episodes(snaps: list[dict]) -> list[dict]:
     # --- restarts (anon collapse) + how fast the chain caught up ----------
     prev_anon = None
     for i, r in enumerate(snaps):
-        a = r.get("memory", {}).get("darkfid", {}).get("anon")
+        a = r.anon
         if a is None:
             continue
         a_mib = a / MIB
         if prev_anon is not None and prev_anon - a_mib > RESTART_DROP_MIB:
-            t = r["exportedAt"]
-            h_now = r.get("height")
+            t = r.t
+            h_now = r.height
             recovered = None
             # Only meaningful if the recording was continuous across the catch-up.
             # After a blind stretch the node is draining a backlog it accumulated
@@ -185,8 +227,8 @@ def find_episodes(snaps: list[dict]) -> list[dict]:
             # blocks in minutes" — so look back well past the gap edge.
             if not spans_a_gap(t - 30 * 60_000, t + 12 * 60_000):
                 for later in snaps[i : i + 12]:  # next ~12 minutes
-                    if later.get("height") is not None and h_now is not None:
-                        recovered = max(recovered or 0, later["height"] - h_now)
+                    if later.height is not None and h_now is not None:
+                        recovered = max(recovered or 0, later.height - h_now)
             eps.append(
                 {
                     "kind": "restart",
@@ -199,53 +241,81 @@ def find_episodes(snaps: list[dict]) -> list[dict]:
         prev_anon = a_mib
 
     # --- stalls: height frozen while peers are up ------------------------
-    h_rows = [r for r in snaps if r.get("height") is not None]
+    h_rows = [r for r in snaps if r.height is not None]
     if h_rows:
-        start = h_rows[0]["exportedAt"]
-        last_h = h_rows[0]["height"]
+        start = h_rows[0].t
+        last_h = h_rows[0].height
         had_peers = False
         for r in h_rows[1:]:
-            if r["height"] != last_h:
-                dur = r["exportedAt"] - start
-                if dur > STALL_MS and had_peers and not spans_a_gap(start, r["exportedAt"]):
+            if r.height != last_h:
+                dur = r.t - start
+                if dur > STALL_MS and had_peers and not spans_a_gap(start, r.t):
                     eps.append(
                         {
                             "kind": "stall",
                             "from": start,
-                            "to": r["exportedAt"],
+                            "to": r.t,
                             "stuckAt": last_h,
                             "note": "height frozen with peers connected",
                         }
                     )
-                start, last_h, had_peers = r["exportedAt"], r["height"], False
-            if (r.get("peers") or 0) > 0:
+                start, last_h, had_peers = r.t, r.height, False
+            if (r.peers or 0) > 0:
                 had_peers = True
 
     eps.sort(key=lambda e: e["from"])
     return eps[:500]
 
 
-def overlay_aggregates(store: str) -> dict | None:
-    """dnet → statistics only. Addresses are used as grouping keys and dropped."""
-    ev = load_jsonl(store, "dnet")
-    ev = [e for e in ev if isinstance(e, dict) and "rx" in e]
-    if len(ev) < 100:
-        return None
-    ev.sort(key=lambda e: e["rx"])
+def _dnet_day(path: str) -> list[tuple]:
+    """One day of dnet events, cut down to the fields read below and in rx order.
 
-    t0, t1 = ev[0]["rx"], ev[-1]["rx"]
+    A day is ~200k events: as dicts that is hundreds of MB, as these tuples tens.
+    Files are named by day, so sorting inside each one and walking the files in
+    name order gives the same global order the old whole-store sort did.
+    """
+    out = []
+    intern = sys.intern
+    for e in iter_jsonl(path):
+        if not isinstance(e, dict) or "rx" not in e:
+            continue
+        info = e.get("info") or {}
+        chan = info.get("chan") or {}
+        kind, addr, cmd = e.get("event"), chan.get("addr"), info.get("cmd")
+        slot_addr = info.get("addr")
+        out.append((
+            e["rx"],
+            intern(kind) if isinstance(kind, str) else kind,
+            intern(addr) if isinstance(addr, str) else addr,
+            intern(cmd) if isinstance(cmd, str) else cmd,
+            chan.get("id"),
+            info.get("time"),
+            info.get("slot", "?"),
+            intern(slot_addr) if isinstance(slot_addr, str) else slot_addr,
+        ))
+    out.sort(key=lambda r: r[0])
+    return out
+
+
+def overlay_aggregates(store: str) -> dict | None:
+    """dnet → statistics only. Addresses are used as grouping keys and dropped.
+
+    One pass, one day in memory at a time. Everything that used to need the
+    whole sorted list (coverage, holes, "does this session straddle a hole")
+    only ever looks backwards, so it can be carried along as running state.
+    """
+    t0 = t1 = prev_rx = None
+    n_events = 0
 
     # Recorded hours are the hours actually covered, NOT the span from first to
     # last event. The recorder was dead for twelve days in July, and dividing by
     # the span turned 57 disconnects/h into 7 — a rate diluted by time when
     # nothing could have been observed. Sum only the intervals where the stream
     # was demonstrably alive; anything longer than the stall threshold is a hole.
-    covered_ms = sum(
-        b["rx"] - a["rx"]
-        for a, b in zip(ev, ev[1:])
-        if 0 <= b["rx"] - a["rx"] <= DNET_COVERAGE_GAP_MS
-    )
-    hours = max(covered_ms / 3_600_000, 0.01)
+    covered_ms = 0
+    # Holes in the stream, so nothing below gets measured across one.
+    holes: list[tuple[int, int]] = []
+    last_hole_end = None
 
     addrs = set()
     cmds: dict[str, list[int]] = defaultdict(lambda: [0, 0])
@@ -267,92 +337,90 @@ def overlay_aggregates(store: str) -> dict | None:
     dialed: set[str] = set()
     cid_addr: dict[object, str] = {}
 
-    for e in ev:
-        info = e.get("info") or {}
-        chan = info.get("chan") or {}
-        addr = chan.get("addr")
-        kind = e.get("event")
-        # the outbound slot events carry the address directly, not under chan
-        if kind in ("outbound_slot_connecting", "outbound_slot_connected"):
-            slot_addr = info.get("addr")
-            if slot_addr:
-                dialed.add(slot_addr)
-                addrs.add(slot_addr)
-                first_seen.setdefault(slot_addr, e["rx"])
-        if addr:
-            addrs.add(addr)
-            first_seen.setdefault(addr, e["rx"])
-            if kind in ("send", "recv"):
-                p_msgs[addr][0 if kind == "send" else 1] += 1
-        cmd = info.get("cmd")
-        if cmd:
-            cmds[cmd][0 if kind == "send" else 1] += 1
-        cid, tns = chan.get("id"), info.get("time")
-        if cid is None or tns is None:
-            continue
-        try:
-            tns = int(tns)
-        except (TypeError, ValueError):
-            continue
-        if kind == "send" and cmd == "ping":
-            pending[cid] = tns
-            if addr:
-                cid_addr[cid] = addr
-        elif kind == "recv" and cmd == "pong" and cid in pending:
-            dt = (tns - pending.pop(cid)) / 1e6
-            owner = cid_addr.pop(cid, addr)
-            # a pong matched across a reconnect is not a round trip
-            if 0 <= dt < 30_000:
-                rtts.append(dt)
-                if owner:
-                    p_rtts[owner].append(dt)
-
-    # Holes in the stream, so nothing below gets measured across one.
-    holes = [
-        (a["rx"], b["rx"])
-        for a, b in zip(ev, ev[1:])
-        if b["rx"] - a["rx"] > DNET_COVERAGE_GAP_MS
-    ]
-
-    def spans_hole(t_from: int, t_to: int) -> bool:
-        return any(h0 < t_to and h1 > t_from for h0, h1 in holes)
-
     # outbound slot lifecycle → completed session durations
     opened: dict[object, int] = {}
     sessions: list[float] = []
-    for e in ev:
-        kind = e.get("event")
-        if kind == "recorder_start":
-            # A fresh subscription knows nothing about what was open before it.
-            opened.clear()
-            continue
-        if kind not in ("outbound_slot_connected", "outbound_slot_disconnected"):
-            continue
-        info = e.get("info") or {}
-        slot = info.get("slot", "?")
-        if kind == "outbound_slot_connected":
-            # keep the address with the slot: the matching disconnect event
-            # carries only the slot, so this is the sole point where a session
-            # can be attributed to a peer.
-            opened[slot] = (e["rx"], info.get("addr"))
-        elif slot in opened:
-            start, s_addr = opened.pop(slot)
-            # A session that appears to straddle a hole is an artefact of the
-            # recorder restarting, not a peer that stayed up for twelve days.
-            if not spans_hole(start, e["rx"]):
-                dur = (e["rx"] - start) / 1000
-                sessions.append(dur)
-                if s_addr:
-                    # (start_ms, duration_s) — the churn charts need when, not
-                    # just how long.
-                    p_sessions[s_addr].append((start, dur))
+
+    for path in store_files(store, "dnet"):
+        for rx, kind, addr, cmd, cid, tns, slot, slot_addr in _dnet_day(path):
+            n_events += 1
+            if t0 is None:
+                t0 = rx
+            t1 = rx
+            if prev_rx is not None:
+                d = rx - prev_rx
+                if 0 <= d <= DNET_COVERAGE_GAP_MS:
+                    covered_ms += d
+                elif d > DNET_COVERAGE_GAP_MS:
+                    holes.append((prev_rx, rx))
+                    last_hole_end = rx
+            prev_rx = rx
+
+            # the outbound slot events carry the address directly, not under chan
+            if kind in ("outbound_slot_connecting", "outbound_slot_connected"):
+                if slot_addr:
+                    dialed.add(slot_addr)
+                    addrs.add(slot_addr)
+                    first_seen.setdefault(slot_addr, rx)
+            if addr:
+                addrs.add(addr)
+                first_seen.setdefault(addr, rx)
+                if kind in ("send", "recv"):
+                    p_msgs[addr][0 if kind == "send" else 1] += 1
+            if cmd:
+                cmds[cmd][0 if kind == "send" else 1] += 1
+
+            if kind == "recorder_start":
+                # A fresh subscription knows nothing about what was open before it.
+                opened.clear()
+            elif kind == "outbound_slot_connected":
+                # keep the address with the slot: the matching disconnect event
+                # carries only the slot, so this is the sole point where a session
+                # can be attributed to a peer.
+                opened[slot] = (rx, slot_addr)
+            elif kind == "outbound_slot_disconnected" and slot in opened:
+                start, s_addr = opened.pop(slot)
+                # A session that appears to straddle a hole is an artefact of the
+                # recorder restarting, not a peer that stayed up for twelve days.
+                # Every hole seen so far ends at or before now, so "a hole inside
+                # [start, now]" is just "the last hole ended after start".
+                if last_hole_end is None or last_hole_end <= start:
+                    dur = (rx - start) / 1000
+                    sessions.append(dur)
+                    if s_addr:
+                        # (start_ms, duration_s) — the churn charts need when, not
+                        # just how long.
+                        p_sessions[s_addr].append((start, dur))
+
+            if cid is None or tns is None:
+                continue
+            try:
+                tns = int(tns)
+            except (TypeError, ValueError):
+                continue
+            if kind == "send" and cmd == "ping":
+                pending[cid] = tns
+                if addr:
+                    cid_addr[cid] = addr
+            elif kind == "recv" and cmd == "pong" and cid in pending:
+                dt = (tns - pending.pop(cid)) / 1e6
+                owner = cid_addr.pop(cid, addr)
+                # a pong matched across a reconnect is not a round trip
+                if 0 <= dt < 30_000:
+                    rtts.append(dt)
+                    if owner:
+                        p_rtts[owner].append(dt)
+
+    if n_events < 100:
+        return None
+    hours = max(covered_ms / 3_600_000, 0.01)
 
     rtts.sort()
     sessions.sort()
     return {
         "from": t0,
         "to": t1,
-        "events": len(ev),
+        "events": n_events,
         "hours": round(hours, 2),
         "distinctPeers": len(addrs),
         "rtt": {
@@ -464,31 +532,31 @@ def _per_peer(addrs, first_seen, p_msgs, p_rtts, p_sessions, dialed):
 
 
 def build_digest(store: str) -> dict:
-    snaps = [r for r in load_jsonl(store, "snapshots") if isinstance(r, dict) and "exportedAt" in r]
+    snaps = load_snaps(store)
     if not snaps:
         raise SystemExit("[digest] no snapshots found — nothing to publish")
-    snaps.sort(key=lambda r: r["exportedAt"])
+    snaps.sort(key=lambda r: r.t)
 
-    t0, t1 = snaps[0]["exportedAt"], snaps[-1]["exportedAt"]
+    t0, t1 = snaps[0].t, snaps[-1].t
     span = max(t1 - t0, 60_000)
     expected = int(span / 60_000)
-    gaps = sum(1 for a, b in zip(snaps, snaps[1:]) if b["exportedAt"] - a["exportedAt"] > GAP_MS)
+    gaps = sum(1 for a, b in zip(snaps, snaps[1:]) if b.t - a.t > GAP_MS)
 
-    dark0 = next((r["memory"]["darkfid"] for r in snaps if r.get("memory", {}).get("darkfid")), {})
+    dark0 = next((r for r in snaps if r.dark), None)
     limits = {
-        "high": round((dark0.get("high") or 0) / MIB),
-        "max": round((dark0.get("max") or 0) / MIB),
+        "high": round(((dark0.high if dark0 else None) or 0) / MIB),
+        "max": round(((dark0.max if dark0 else None) or 0) / MIB),
     }
 
-    heights = [r["height"] for r in snaps if r.get("height") is not None]
+    heights = [r.height for r in snaps if r.height is not None]
     lags = sorted(
-        r["tip"] - r["height"]
+        r.tip - r.height
         for r in snaps
-        if r.get("tip") is not None and r.get("height") is not None
+        if r.tip is not None and r.height is not None
     )
     hours = span / 3_600_000
 
-    peer_vals = [r["peers"] for r in snaps if r.get("peers") is not None]
+    peer_vals = [r.peers for r in snaps if r.peers is not None]
     histogram: dict[str, int] = defaultdict(int)
     for p in peer_vals:
         histogram[str(int(p))] += 1
@@ -500,14 +568,10 @@ def build_digest(store: str) -> dict:
         elif p != 0:
             inzero = False
 
-    temps = sorted(r["tempC"] for r in snaps if r.get("tempC") is not None)
-    thr = [r.get("throttled") for r in snaps if r.get("throttled") is not None]
+    temps = sorted(r.temp for r in snaps if r.temp is not None)
+    thr = [r.thr for r in snaps if r.thr is not None]
     clean = sum(1 for v in thr if v in ("0x0", "0"))
-    hrs = sorted(
-        r["hashrate"]["total"][0]
-        for r in snaps
-        if (r.get("hashrate", {}).get("total") or [None])[0]
-    )
+    hrs = sorted(r.hr for r in snaps if r.hr)
 
     return {
         "v": SCHEMA_VERSION,
@@ -606,7 +670,8 @@ def main() -> None:
         f"{len(s['anon'])} buckets @ {s['step']//60000}min · "
         f"{len(digest['episodes'])} episodes · "
         f"overlay {'yes' if digest['overlay'] else 'none'} · "
-        f"{len(blob)/1024:.1f} KB",
+        f"{len(blob)/1024:.1f} KB · "
+        f"peak RSS {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024:.0f} MiB",
         file=sys.stderr,
     )
 
