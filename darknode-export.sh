@@ -226,18 +226,24 @@ if [[ -n "${DARKFID_HEIGHT_CMD:-}" ]]; then
   read -r height tip peers difficulty < <(eval "$DARKFID_HEIGHT_CMD" 2>/dev/null || true)
 fi
 
-if [[ -z "$height" ]]; then
-  height="$(rpc_call "$DARKFID_RPC_PORT" blockchain.last_confirmed_block \
-    | jq -r '.result[0] // empty' 2>/dev/null || true)"
-fi
-if [[ -z "$tip" ]]; then
-  # best_fork_next_block_height = the height the next block would land on,
-  # i.e. the best fork's tip (unconfirmed proposals included) is next - 1.
+# height = the head of the best fork the node follows, unconfirmed proposals
+# included: best_fork_next_block_height is where the next block would land, so
+# the head is next - 1. It used to be last_confirmed_block, which trails the
+# head by the confirmation depth (5 blocks on 22-S), and the panel read a
+# healthy node as "syncing, lag 5". The same head seeds tip; the network's tip
+# from the log raises it below while a sync is running.
+if [[ -z "$height" || -z "$tip" ]]; then
   next="$(rpc_call "$DARKFID_RPC_PORT" blockchain.best_fork_next_block_height \
     | jq -r '.result // empty' 2>/dev/null || true)"
   if [[ "$next" =~ ^[0-9]+$ ]] && ((next > 0)); then
-    tip=$((next - 1))
+    [[ -z "$height" ]] && height=$((next - 1))
+    [[ -z "$tip" ]] && tip=$((next - 1))
   fi
+fi
+if [[ -z "$height" ]]; then
+  # the call failed or darkfid is older: the last confirmed block, a few behind
+  height="$(rpc_call "$DARKFID_RPC_PORT" blockchain.last_confirmed_block \
+    | jq -r '.result[0] // empty' 2>/dev/null || true)"
 fi
 
 if [[ -z "$height" || -z "$tip" ]]; then
