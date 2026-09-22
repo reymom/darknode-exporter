@@ -35,8 +35,11 @@ MIB = 1024 * 1024
 
 # A hole longer than this is a gap in the recording, not a slipped sample.
 GAP_MS = 150_000
-# cgroup total above this = the memory-ceiling episode the memguard net covers.
-CEILING_MIB = 4000
+# anon within this fraction of the limit in force = a memory-ceiling episode.
+CEILING_FRAC = 0.95
+# a zero-peer stretch shorter than this is a restart finding its peers again,
+# not the network being lost.
+ZERO_PEER_MIN_MS = 5 * 60_000
 # anon falling by more than this in one step = the process restarted.
 RESTART_DROP_MIB = 2000
 # height frozen at least this long, with peers, = a stall.
@@ -230,11 +233,16 @@ def find_episodes(snaps: list[Snap]) -> list[dict]:
         return any(g0 < t_to and g1 > t_from for g0, g1 in gap_spans)
 
     # --- memory-ceiling excursions ---------------------------------------
+    # The working set pressing the limit in force at the time: MemoryHigh, or
+    # MemoryMax when there is no soft limit. This used to be "cgroup total above
+    # 4000 MiB", which counts reclaimable cache and called a whole night with no
+    # soft limit at all a 12-hour ceiling.
     cur = None
     for r in snaps:
-        c = (r.current or 0) / MIB
+        c = (r.anon or 0) / MIB
         t = r.t
-        if c > CEILING_MIB:
+        lim = (r.high or r.max or 0) / MIB
+        if lim and c >= CEILING_FRAC * lim:
             if cur is None:
                 cur = {"kind": "memory_ceiling", "from": t, "to": t, "peakMiB": c}
             else:
@@ -606,13 +614,24 @@ def build_digest(store: str) -> dict:
     histogram: dict[str, int] = defaultdict(int)
     for p in peer_vals:
         histogram[str(int(p))] += 1
-    zero_eps, inzero = 0, False
-    for p in peer_vals:
-        if p == 0 and not inzero:
-            zero_eps += 1
-            inzero = True
-        elif p != 0:
-            inzero = False
+    # Only stretches that last, and never measured across a recording gap:
+    # every restart spends its first minute or so with no peers.
+    zero_eps, z_from, prev_t = 0, None, None
+    for r in snaps:
+        if r.peers is None:
+            continue
+        if prev_t is not None and r.t - prev_t > GAP_MS:
+            z_from = None
+        if r.peers == 0:
+            if z_from is None:
+                z_from = r.t
+        else:
+            if z_from is not None and r.t - z_from >= ZERO_PEER_MIN_MS:
+                zero_eps += 1
+            z_from = None
+        prev_t = r.t
+    if z_from is not None and prev_t - z_from >= ZERO_PEER_MIN_MS:
+        zero_eps += 1
 
     temps = sorted(r.temp for r in snaps if r.temp is not None)
     thr = [r.thr for r in snaps if r.thr is not None]
