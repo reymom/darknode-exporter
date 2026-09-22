@@ -2,7 +2,10 @@
 Description=Record darkfid dnet P2P events to local NDJSON history
 Documentation=https://www.reymom.xyz/darknode
 After=darkfid.service
-Wants=darkfid.service
+# PartOf, not Wants: stopping or restarting darkfid carries over to the recorder,
+# but the recorder never starts darkfid. With Wants, Restart=always here brought
+# darkfid back up minutes after it had been stopped on purpose (21-S).
+PartOf=darkfid.service
 
 [Service]
 Type=simple
