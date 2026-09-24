@@ -116,12 +116,14 @@ optional:
 | `series.hashrate`, `series.difficulty` | the miner's hash rate and the network difficulty it is working against, per bucket |
 | `series.blocksPerHour` | block production, counted only across samples where the node was within 5 blocks of the tip **and** moving no faster than four times the chain's target. The lag test alone is not enough: while resyncing, darkfid reports its own chain, so height equals tip and a node replaying thousands of blocks looks caught up |
 | `retention` | anon now against the node's floor just after its last restart: what the process is holding and not using |
-| `chainActivity` | per-height totals over the whole chain: blocks seen, blocks carrying more than the miner's own reward, calls, gas, and calls bucketed by height |
+| `chainActivity` | per-height totals over the whole chain: blocks seen, blocks carrying more than the miner's own reward, calls, gas, calls bucketed by height, `callsByKind` (named from the contracts' own log lines, so it only covers blocks applied since the logger learned to read them) and `perDay` (only blocks the node saw arrive, never a replay) |
+| `sources` | how often each published number was answered by darkfid's RPC rather than scraped from its journal, per field. The two are not the same claim, and until now nothing on the page said which one it was showing |
 | `overlay.sessions.histogram` | session lengths in log buckets; the median is 33 s and the longest is over a day, so a linear histogram says nothing |
 | `overlay.rtt.byCeiling` | round trips split by whether the node was against its memory ceiling at the time |
 
-Snapshots also carry `darkfidStartedAt`, so a restart is an exact observation
-rather than something inferred from a drop in memory.
+Snapshots also carry `darkfidStartedAt`, so a restart is an exact observation rather than
+something inferred from a drop in memory, and a `sources` object naming where `height`,
+`tip`, `peers` and `difficulty` each came from on that sample.
 
 ## Privacy
 

@@ -218,6 +218,14 @@ fi
 height=""
 tip=""
 peers=""
+# Where each number came from. The panel shows it, so a scraped number can
+# never pass for one the node answered: "rpc" is darkfid's own JSON-RPC, "log"
+# is a journal scrape, "cmd" is the operator's override, "ss" is the kernel's
+# socket table, and "height" means tip was pinned to height because nothing
+# said otherwise.
+src_height=""
+src_tip=""
+src_peers=""
 # xmrig reports the live PoW job difficulty it's mining against — this is the
 # network's own difficulty target, not something specific to xmrig.
 difficulty="$(jq -r '.results.diff_current // empty' <<<"$summary_json" 2>/dev/null || true)"
@@ -236,6 +244,9 @@ if [[ -n "${DARKFID_HEIGHT_CMD:-}" ]]; then
   # user-provided one-liner that prints "height tip peers difficulty"
   # shellcheck disable=SC2086
   read -r height tip peers difficulty < <(eval "$DARKFID_HEIGHT_CMD" 2>/dev/null || true)
+  [[ -n "$height" ]] && src_height="cmd"
+  [[ -n "$tip" ]] && src_tip="cmd"
+  [[ -n "$peers" ]] && src_peers="cmd"
 fi
 
 # height = the head of the best fork the node follows, unconfirmed proposals
@@ -248,14 +259,15 @@ if [[ -z "$height" || -z "$tip" ]]; then
   next="$(rpc_call "$DARKFID_RPC_PORT" blockchain.best_fork_next_block_height \
     | jq -r '.result // empty' 2>/dev/null || true)"
   if [[ "$next" =~ ^[0-9]+$ ]] && ((next > 0)); then
-    [[ -z "$height" ]] && height=$((next - 1))
-    [[ -z "$tip" ]] && tip=$((next - 1))
+    if [[ -z "$height" ]]; then height=$((next - 1)); src_height="rpc"; fi
+    if [[ -z "$tip" ]]; then tip=$((next - 1)); src_tip="rpc"; fi
   fi
 fi
 if [[ -z "$height" ]]; then
   # the call failed or darkfid is older: the last confirmed block, a few behind
   height="$(rpc_call "$DARKFID_RPC_PORT" blockchain.last_confirmed_block \
     | jq -r '.result[0] // empty' 2>/dev/null || true)"
+  [[ -n "$height" ]] && src_height="rpc-confirmed"
 fi
 
 if [[ -z "$height" || -z "$tip" ]]; then
@@ -273,6 +285,7 @@ if [[ -z "$height" || -z "$tip" ]]; then
         | grep -Eo '[0-9]+$' \
         | sort -n | tail -n1 || true
     )"
+    [[ -n "$height" ]] && src_height="log"
   fi
   # network tip: "Most common tip: N - <hash>"
   if [[ -z "$tip" ]]; then
@@ -282,6 +295,7 @@ if [[ -z "$height" || -z "$tip" ]]; then
         | grep -Eo '[0-9]+' \
         | sort -n | tail -n1 || true
     )"
+    [[ -n "$tip" ]] && src_tip="log"
   fi
 fi
 # While syncing, the RPC only knows the node's own chain, so height and tip move
@@ -297,12 +311,14 @@ net_tip="$(
 )"
 if [[ "$net_tip" =~ ^[0-9]+$ ]] && { [[ -z "$tip" ]] || ((net_tip > tip)); }; then
   tip="$net_tip"
+  src_tip="log"
 fi
 # The proposal tip can transiently sit at/below the confirmed height around a
 # reorg; and when following quietly there may be no tip signal at all. The node
 # is at the tip in both cases — never let tip sit below height.
 if [[ -n "$height" ]] && { [[ -z "$tip" ]] || ((tip < height)); }; then
   tip="$height"
+  src_tip="height"
 fi
 
 # peers = established TCP sessions on the P2P port (both directions). Count
@@ -321,6 +337,7 @@ if [[ -z "$peers" ]]; then
   if ss_out="$(ss -Htn state established \
         "( dport = :${DARKFID_P2P_PORT} or sport = :${DARKFID_P2P_PORT} )" 2>/dev/null)"; then
     peers="$(printf '%s' "$ss_out" | grep -c . || true)"
+    src_peers="ss"
   else
     peers=""   # could not measure — distinct from measured zero
   fi
@@ -350,6 +367,9 @@ payload="$(
   jq -cn \
     --argjson exportedAt "$exported_at" \
     --arg darkfidStarted "$darkfid_started" \
+    --arg srcHeight "$src_height" \
+    --arg srcTip "$src_tip" \
+    --arg srcPeers "$src_peers" \
     --argjson summary "$summary_json" \
     --argjson threads "$threads_json" \
     --argjson darkCur "$dark_cur" \
@@ -425,6 +445,12 @@ payload="$(
     + (if $peers != "" then {peers: ($peers|tonumber)} else {} end)
     + (if $difficulty != "" then {difficulty: ($difficulty|tonumber)} else {} end)
     + (if $darkfidStarted != "" then {darkfidStartedAt: ($darkfidStarted|tonumber)} else {} end)
+    + ({sources: (
+          (if $srcHeight != "" then {height: $srcHeight} else {} end)
+        + (if $srcTip != "" then {tip: $srcTip} else {} end)
+        + (if $srcPeers != "" then {peers: $srcPeers} else {} end)
+        + {difficulty: "xmrig"}
+      )})
     | with_entries(select(.value != null))
   '
 )"
