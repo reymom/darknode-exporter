@@ -28,6 +28,7 @@ import json
 import os
 import resource
 import statistics
+import time
 import sys
 import urllib.error
 import urllib.request
@@ -64,6 +65,9 @@ MIN_RATE_H = 0.05
 # The chain targets a block every 120 s, i.e. 0.5/min. Four times that is still
 # a plausible run of luck; an order of magnitude above it is a node catching up.
 MAX_NET_BLOCKS_PER_MIN = 2.0
+# Seconds between two applied blocks, below which the node is replaying the
+# chain rather than following it.
+LIVE_BLOCK_GAP_S = 20
 # How long after a restart to look for the node's floor, and how quiet the
 # window has to be for that floor to mean anything.
 RETENTION_WINDOW_MS = 30 * 60_000
@@ -119,7 +123,7 @@ class Snap:
 
     __slots__ = ("t", "dark", "anon", "cache", "current", "high", "max",
                  "peers", "tip", "height", "load", "temp", "thr", "hr",
-                 "diff", "started")
+                 "diff", "started", "src")
 
     def __init__(self, r: dict):
         m = (r.get("memory") or {}).get("darkfid") or {}
@@ -139,6 +143,7 @@ class Snap:
         self.hr = ((r.get("hashrate") or {}).get("total") or [None])[0]
         self.diff = r.get("difficulty")
         self.started = r.get("darkfidStartedAt")
+        self.src = r.get("sources") or {}
         for t_from, t_to, high, mx in LIMIT_OVERRIDES:
             if t_from <= self.t < t_to:
                 self.high, self.max = high, mx
@@ -432,12 +437,14 @@ def _dnet_day(path: str) -> list[tuple]:
     return out
 
 
-def _block_rows(store: str) -> list[tuple[int, int, int, int]]:
-    """(applied_at, height, calls, gas) from the block logger, deduplicated.
+def _block_rows(store: str) -> list[tuple[int, int, int, int, str]]:
+    """(applied_at, height, calls, gas, mix) from the block logger.
 
     The logger appends one line per block darkfid applies. A resync replays the
     whole chain, so the same height appears twice with different timestamps;
-    the height is the identity, not the line.
+    the height is the identity, not the line. `mix` is "Name:n,Name:n" from the
+    contracts' own log lines, or "-" for the rows written before the logger
+    learned to name them.
     """
     paths = [os.path.join(store, "blocks.tsv")]
     legacy = os.environ.get("DARKNODE_BLOCKS_LEGACY", "").strip()
@@ -455,7 +462,8 @@ def _block_rows(store: str) -> list[tuple[int, int, int, int]]:
                 if len(f) < 4 or not f[0].isdigit():
                     continue
                 try:
-                    rows.append((int(f[0]), int(f[1]), int(f[2]), int(f[3])))
+                    rows.append((int(f[0]), int(f[1]), int(f[2]), int(f[3]),
+                                 f[4] if len(f) > 4 else "-"))
                 except ValueError:
                     continue
     rows.sort()
@@ -472,25 +480,51 @@ def chain_activity(store: str) -> dict | None:
     if len(rows) < 100:
         return None
 
-    by_height: dict[int, tuple[int, int]] = {}
-    for _t, h, c, g in rows:
-        by_height[h] = (c, g)      # the last application of a height wins
+    by_height: dict[int, tuple[int, int, str]] = {}
+    for _t, h, c, g, mix in rows:
+        by_height[h] = (c, g, mix)      # the last application of a height wins
+
+    # Per day, but only for blocks the node saw arrive rather than replayed: a
+    # resync applies thousands in a minute and would bury a real day under a
+    # day of catching up. Live blocks are ~120 s apart; a replayed one lands in
+    # well under a second.
+    per_day: dict[str, list[int]] = defaultdict(lambda: [0, 0, 0])
+    prev_t = None
+    for t, _h, c, g, _mix in rows:
+        if prev_t is not None and t - prev_t >= LIVE_BLOCK_GAP_S:
+            day = time.strftime("%Y-%m-%d", time.gmtime(t))
+            row = per_day[day]
+            row[0] += 1
+            row[1] += c
+            row[2] += g
+        prev_t = t
+
+    kinds: dict[str, int] = defaultdict(int)
+    named = 0
+    for _c, _g, mix in by_height.values():
+        if mix in ("", "-"):
+            continue
+        named += 1
+        for part in mix.split(","):
+            name, _, n = part.partition(":")
+            if name and n.isdigit():
+                kinds[name] += int(n)
 
     heights = sorted(by_height)
     h0, h1 = heights[0], heights[-1]
-    calls = sum(c for c, _ in by_height.values())
-    gas = sum(g for _, g in by_height.values())
+    calls = sum(c for c, _g, _m in by_height.values())
+    gas = sum(g for _c, g, _m in by_height.values())
     # One call per block is the miner claiming its own reward. More than one is
     # somebody else using the chain.
-    with_tx = sum(1 for c, _ in by_height.values() if c > 1)
-    max_calls = max(c for c, _ in by_height.values())
+    with_tx = sum(1 for c, _g, _m in by_height.values() if c > 1)
+    max_calls = max(c for c, _g, _m in by_height.values())
 
     span = max(h1 - h0, 1)
     step = max(1, -(-span // MAX_BUCKETS))          # ceil, so n <= MAX_BUCKETS
     step = max(step, 50) if span > 50 * MAX_BUCKETS else step
     n = span // step + 1
     by_bucket = [0] * n
-    for h, (c, _g) in by_height.items():
+    for h, (c, _g, _m) in by_height.items():
         i = (h - h0) // step
         if 0 <= i < n:
             by_bucket[i] += c
@@ -505,6 +539,14 @@ def chain_activity(store: str) -> dict | None:
         "maxCallsInBlock": max_calls,
         "step": step,
         "callsByHeight": by_bucket,
+        # Named from the contracts' own log lines, so it only covers the blocks
+        # applied since the logger learned to read them.
+        "callsByKind": dict(sorted(kinds.items(), key=lambda kv: -kv[1])),
+        "blocksNamed": named,
+        "perDay": [
+            {"day": d, "blocks": v[0], "calls": v[1], "gas": v[2]}
+            for d, v in sorted(per_day.items())
+        ][-90:],
     }
 
 
@@ -821,6 +863,33 @@ def _per_peer(addrs, first_seen, p_msgs, p_rtts, p_sessions, dialed):
     return out
 
 
+def source_mix(snaps: list[Snap]) -> dict | None:
+    """How often each published number was answered rather than scraped.
+
+    The panel shows it because the two are not the same claim: darkfid's RPC is
+    the node speaking, a journal scrape is us reading its diary, and until 24-S
+    nothing on the page said which one it was looking at.
+    """
+    fields: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    seen = 0
+    for r in snaps:
+        if not r.src:
+            continue
+        seen += 1
+        for k, v in r.src.items():
+            if isinstance(v, str):
+                fields[k][v] += 1
+    if not seen:
+        return None
+    return {
+        "snapshots": seen,
+        "byField": {
+            k: {src: round(100 * n / seen, 1) for src, n in sorted(v.items(), key=lambda kv: -kv[1])}
+            for k, v in fields.items()
+        },
+    }
+
+
 def retention(snaps: list[Snap], episodes: list[dict]) -> dict | None:
     """What the process is holding that it is not using.
 
@@ -921,7 +990,7 @@ def build_digest(store: str) -> dict:
 
     return {
         "v": SCHEMA_VERSION,
-        "generatedAt": int(__import__("time").time() * 1000),
+        "generatedAt": int(time.time() * 1000),
         "window": {"from": t0, "to": t1},
         "coverage": {
             "snapshots": len(snaps),
@@ -957,6 +1026,7 @@ def build_digest(store: str) -> dict:
             "throttleCleanPct": round(100 * clean / len(thr), 2) if thr else 100.0,
             "hashrateMedian": round(statistics.median(hrs), 1) if hrs else 0,
         },
+        "sources": source_mix(snaps),
         "retention": retention(snaps, episodes),
         "chainActivity": chain_activity(store),
         "overlay": overlay_aggregates(store, ceilings),
