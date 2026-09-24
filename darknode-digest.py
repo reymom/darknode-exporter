@@ -7,7 +7,11 @@ dnet events carry peer addresses, which by standing rule never leave this
 machine. So we aggregate here and POST only the result.
 
 Contract: portfolio-site `src/lib/node-history.ts` (schema v1). Keep the two in
-step; the ingest route validates strictly and will 400 on drift.
+step; the ingest route validates strictly and will 400 on drift. Fields are
+added, never renamed or removed, so `v` only moves when something already
+published changes shape. Added 2026-09-24, and the site does not read them yet:
+`series.hashrate`, `series.blocksPerHour`, `retention`, `chainActivity`,
+`overlay.sessions.histogram` and `overlay.rtt.byCeiling`.
 
 Usage:
     darknode-digest.py                 # compute and POST
@@ -51,6 +55,17 @@ DNET_COVERAGE_GAP_MS = 300_000
 # The zoomed series: the most recent stretch at a resolution where a sync or a
 # restart is visible, which the whole-window series averages away.
 ZOOM_MS = 48 * 3_600_000
+
+# Lag, in blocks, within which the node counts as "at the tip" — so the block
+# rate it reports is the network's production and not its own catching up.
+AT_TIP = 5
+# A bucket needs this many hours of usable samples before a rate is emitted.
+MIN_RATE_H = 0.05
+# How long after a restart to look for the node's floor, and how quiet the
+# window has to be for that floor to mean anything.
+RETENTION_WINDOW_MS = 30 * 60_000
+# Session lengths, in seconds, as a log-ish histogram.
+SESSION_EDGES = [0, 1, 3, 10, 30, 100, 300, 1000, 3600, 10800]
 
 GIB = 1024 * MIB
 # Windows where the recorded limits were wrong. Until 22-S the exporter read
@@ -100,7 +115,8 @@ class Snap:
     """The dozen fields the digest reads from a snapshot, and nothing else."""
 
     __slots__ = ("t", "dark", "anon", "cache", "current", "high", "max",
-                 "peers", "tip", "height", "load", "temp", "thr", "hr")
+                 "peers", "tip", "height", "load", "temp", "thr", "hr",
+                 "diff", "started")
 
     def __init__(self, r: dict):
         m = (r.get("memory") or {}).get("darkfid") or {}
@@ -118,6 +134,8 @@ class Snap:
         self.temp = r.get("tempC")
         self.thr = r.get("throttled")
         self.hr = ((r.get("hashrate") or {}).get("total") or [None])[0]
+        self.diff = r.get("difficulty")
+        self.started = r.get("darkfidStartedAt")
         for t_from, t_to, high, mx in LIMIT_OVERRIDES:
             if t_from <= self.t < t_to:
                 self.high, self.max = high, mx
@@ -194,6 +212,31 @@ def build_series(snaps: list[Snap], t0: int, t1: int) -> dict:
             out.append(round(max(vals) / MIB) if vals else None)
         return out
 
+    # Blocks per hour, counted only across pairs of samples where the node was
+    # at the tip. A node catching up moves through blocks far faster than the
+    # network makes them, and that is its own speed, not the network's.
+    produced = [0.0] * n
+    covered_h = [0.0] * n
+    for a, b in zip(snaps, snaps[1:]):
+        dt = b.t - a.t
+        if dt <= 0 or dt > GAP_MS:
+            continue
+        if None in (a.height, b.height, a.tip, b.tip):
+            continue
+        if (a.tip - a.height) > AT_TIP or (b.tip - b.height) > AT_TIP:
+            continue
+        delta = b.height - a.height
+        if delta < 0:            # a resync replaying the chain
+            continue
+        i = int((b.t - t0) // step)
+        if 0 <= i < n:
+            produced[i] += delta
+            covered_h[i] += dt / 3_600_000
+    blocks_ph = [
+        round(produced[i] / covered_h[i], 1) if covered_h[i] >= MIN_RATE_H else None
+        for i in range(n)
+    ]
+
     return {
         "step": step,
         "t0": t0,
@@ -205,6 +248,9 @@ def build_series(snaps: list[Snap], t0: int, t1: int) -> dict:
         "tempC": temp,
         "high": limit(lambda r: r.high),
         "max": limit(lambda r: r.max),
+        "hashrate": rnd(series(lambda r: r.hr), 1),
+        "blocksPerHour": blocks_ph,
+        "difficulty": rnd(series(lambda r: r.diff), 0),
     }
 
 
@@ -351,7 +397,83 @@ def _dnet_day(path: str) -> list[tuple]:
     return out
 
 
-def overlay_aggregates(store: str) -> dict | None:
+def _block_rows(store: str) -> list[tuple[int, int, int, int]]:
+    """(applied_at, height, calls, gas) from the block logger, deduplicated.
+
+    The logger appends one line per block darkfid applies. A resync replays the
+    whole chain, so the same height appears twice with different timestamps;
+    the height is the identity, not the line.
+    """
+    paths = [os.path.join(store, "blocks.tsv")]
+    legacy = os.environ.get("DARKNODE_BLOCKS_LEGACY", "").strip()
+    if legacy:
+        paths.append(legacy)
+    rows: list[tuple[int, int, int, int]] = []
+    for path in paths:
+        try:
+            fh = open(path, "rt")
+        except OSError:
+            continue
+        with fh:
+            for line in fh:
+                f = line.rstrip("\n").split("\t")
+                if len(f) < 4 or not f[0].isdigit():
+                    continue
+                try:
+                    rows.append((int(f[0]), int(f[1]), int(f[2]), int(f[3])))
+                except ValueError:
+                    continue
+    rows.sort()
+    return rows
+
+
+def chain_activity(store: str) -> dict | None:
+    """What the chain carried, per height: calls, gas, and where the traffic is.
+
+    This is the one part of the digest that grows with the chain rather than
+    with the window, so it is bucketed by height, not by time.
+    """
+    rows = _block_rows(store)
+    if len(rows) < 100:
+        return None
+
+    by_height: dict[int, tuple[int, int]] = {}
+    for _t, h, c, g in rows:
+        by_height[h] = (c, g)      # the last application of a height wins
+
+    heights = sorted(by_height)
+    h0, h1 = heights[0], heights[-1]
+    calls = sum(c for c, _ in by_height.values())
+    gas = sum(g for _, g in by_height.values())
+    # One call per block is the miner claiming its own reward. More than one is
+    # somebody else using the chain.
+    with_tx = sum(1 for c, _ in by_height.values() if c > 1)
+    max_calls = max(c for c, _ in by_height.values())
+
+    span = max(h1 - h0, 1)
+    step = max(1, -(-span // MAX_BUCKETS))          # ceil, so n <= MAX_BUCKETS
+    step = max(step, 50) if span > 50 * MAX_BUCKETS else step
+    n = span // step + 1
+    by_bucket = [0] * n
+    for h, (c, _g) in by_height.items():
+        i = (h - h0) // step
+        if 0 <= i < n:
+            by_bucket[i] += c
+
+    return {
+        "fromHeight": h0,
+        "toHeight": h1,
+        "blocksSeen": len(by_height),
+        "blocksWithTx": with_tx,
+        "calls": calls,
+        "gas": gas,
+        "maxCallsInBlock": max_calls,
+        "step": step,
+        "callsByHeight": by_bucket,
+    }
+
+
+def overlay_aggregates(store: str, ceilings: list[tuple[int, int]] | None = None) -> dict | None:
     """dnet → statistics only. Addresses are used as grouping keys and dropped.
 
     One pass, one day in memory at a time. Everything that used to need the
@@ -484,6 +606,7 @@ def overlay_aggregates(store: str) -> dict | None:
             "p90Ms": round(pctl(rtts, 0.9), 1),
             "p99Ms": round(pctl(rtts, 0.99), 1),
             "samples": len(rtts),
+            "byCeiling": _rtt_by_ceiling(rtt_at, ceilings),
         },
         "sessions": {
             "completed": len(sessions),
@@ -491,6 +614,7 @@ def overlay_aggregates(store: str) -> dict | None:
             "p90S": round(pctl(sessions, 0.9), 1),
             "churnPerHour": round(len(sessions) / hours, 2),
             "longestS": round(sessions[-1], 1) if sessions else 0,
+            "histogram": _session_histogram(sessions),
         },
         "wireMix": [
             {"cmd": c, "send": v[0], "recv": v[1]}
@@ -499,6 +623,53 @@ def overlay_aggregates(store: str) -> dict | None:
         "peers": _per_peer(addrs, first_seen, p_msgs, p_rtts, p_sessions, dialed),
         **_churn(t0, t1, p_sessions, first_seen, holes),
         "rttSeries": _rtt_series(t0, t1, rtt_at),
+    }
+
+
+def _session_histogram(sessions: list[float]) -> list[dict]:
+    """Session lengths in log-ish buckets. The median is 33 s and the longest is
+    a day and a half, so a linear histogram is one bar and a rumour."""
+    if not sessions:
+        return []
+    out = []
+    edges = SESSION_EDGES + [None]
+    for lo, hi in zip(edges, edges[1:]):
+        n = sum(1 for v in sessions if v >= lo and (hi is None or v < hi))
+        out.append({"fromS": lo, "toS": hi, "n": n})
+    return out
+
+
+def _rtt_by_ceiling(rtt_at: list[tuple[int, float]], ceilings) -> dict | None:
+    """Round trips split by whether the node was against its memory ceiling.
+
+    From inside, a throttled node answers its own pings late — so this is the
+    node measuring itself, not the network. Splitting it is the only way to say
+    that out loud with numbers.
+    """
+    if not ceilings or not rtt_at:
+        return None
+    wins = sorted(ceilings)
+    under, quiet = [], []
+    i = 0
+    for rx, ms in sorted(rtt_at):
+        while i < len(wins) and wins[i][1] < rx:
+            i += 1
+        (under if i < len(wins) and wins[i][0] <= rx <= wins[i][1] else quiet).append(ms)
+    under.sort()
+    quiet.sort()
+    if len(under) < 30 or len(quiet) < 30:
+        return None
+    return {
+        "underCeiling": {
+            "medianMs": round(pctl(under, 0.5), 1),
+            "p90Ms": round(pctl(under, 0.9), 1),
+            "samples": len(under),
+        },
+        "quiet": {
+            "medianMs": round(pctl(quiet, 0.5), 1),
+            "p90Ms": round(pctl(quiet, 0.9), 1),
+            "samples": len(quiet),
+        },
     }
 
 
@@ -615,6 +786,42 @@ def _per_peer(addrs, first_seen, p_msgs, p_rtts, p_sessions, dialed):
     return out
 
 
+def retention(snaps: list[Snap], episodes: list[dict]) -> dict | None:
+    """What the process is holding that it is not using.
+
+    The floor is the quietest sample in the half hour after the last restart:
+    the node rebuilt its working set from nothing and that is what the work
+    costs. Anything it holds above that line later has been kept, not used —
+    which is the whole of the allocator story, as one number.
+    """
+    if not snaps:
+        return None
+    # The node reports when it started, so use that: a restart that frees less
+    # than the episode threshold is still a restart.
+    starts = [r.started for r in snaps if r.started]
+    at = max(starts) if starts else None
+    if at is None:
+        restarts = [e for e in episodes if e["kind"] == "restart"]
+        if not restarts:
+            return None
+        at = restarts[-1]["from"]
+    after = [
+        r.anon for r in snaps
+        if r.anon and at <= r.t <= at + RETENTION_WINDOW_MS
+    ]
+    now = next((r.anon for r in reversed(snaps) if r.anon), None)
+    if not after or not now:
+        return None
+    floor = min(after)
+    return {
+        "restartAt": at,
+        "floorMiB": round(floor / MIB),
+        "nowMiB": round(now / MIB),
+        "heldMiB": round((now - floor) / MIB),
+        "hoursSince": round((snaps[-1].t - at) / 3_600_000, 1),
+    }
+
+
 def build_digest(store: str) -> dict:
     snaps = load_snaps(store)
     if not snaps:
@@ -668,6 +875,13 @@ def build_digest(store: str) -> dict:
     clean = sum(1 for v in thr if v in ("0x0", "0"))
     hrs = sorted(r.hr for r in snaps if r.hr)
 
+    episodes = find_episodes(snaps)
+    ceilings = [
+        (e["from"], e.get("to") or t1)
+        for e in episodes
+        if e["kind"] == "memory_ceiling"
+    ]
+
     return {
         "v": SCHEMA_VERSION,
         "generatedAt": int(__import__("time").time() * 1000),
@@ -685,7 +899,7 @@ def build_digest(store: str) -> dict:
             [r for r in snaps if r.t >= t1 - ZOOM_MS], max(t0, t1 - ZOOM_MS), t1
         ),
         "markers": [m for m in MARKERS if t0 <= m["at"] <= t1],
-        "episodes": find_episodes(snaps),
+        "episodes": episodes,
         "chain": {
             "firstHeight": heights[0] if heights else 0,
             "lastHeight": heights[-1] if heights else 0,
@@ -706,7 +920,9 @@ def build_digest(store: str) -> dict:
             "throttleCleanPct": round(100 * clean / len(thr), 2) if thr else 100.0,
             "hashrateMedian": round(statistics.median(hrs), 1) if hrs else 0,
         },
-        "overlay": overlay_aggregates(store),
+        "retention": retention(snaps, episodes),
+        "chainActivity": chain_activity(store),
+        "overlay": overlay_aggregates(store, ceilings),
     }
 
 
@@ -769,6 +985,7 @@ def main() -> None:
         f"{len(s['anon'])} buckets @ {s['step']//60000}min · "
         f"{len(digest['episodes'])} episodes · "
         f"overlay {'yes' if digest['overlay'] else 'none'} · "
+        f"chain {digest['chainActivity']['blocksSeen'] if digest['chainActivity'] else 0} blocks · "
         f"{len(blob)/1024:.1f} KB · "
         f"peak RSS {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024:.0f} MiB",
         file=sys.stderr,

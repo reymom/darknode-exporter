@@ -93,10 +93,35 @@ peer-discovery states, slot lifecycle) to `/var/log/darknode/dnet-YYYY-MM-DD.jso
 Raw dnet events carry peer addresses, so **they never leave the Pi** — only
 aggregates may be published.
 
+`darkfid-blocks.sh` (+ `darkfid-blocks.service`) follows darkfid's journal and
+appends one line per applied block to `/var/log/darknode/blocks.tsv`: when it was
+applied, its height, how many contract calls it carried and how much gas they
+burned. The journal itself is volatile here (it lives in RAM, so a reboot erases
+it), and this is what lets the digest show the chain's own activity over its
+whole length rather than over the recording window.
+
 Height / tip / peers are now read from darkfid's localhost JSON-RPC
 (`blockchain.last_confirmed_block`, `blockchain.best_fork_next_block_height`)
 and an `ss` count of established P2P sessions, with the journal scrape kept as
 fallback.
+
+## What the digest adds (2026-09-24)
+
+The digest is aggregate-only and additive: fields get added, never renamed, so an
+older receiver keeps working against a newer digest. The latest additions, all
+optional:
+
+| Field | What it is |
+|---|---|
+| `series.hashrate`, `series.difficulty` | the miner's hash rate and the network difficulty it is working against, per bucket |
+| `series.blocksPerHour` | block production, counted **only** across samples where the node was within 5 blocks of the tip — a node catching up moves faster than the network makes blocks, and that is its own speed |
+| `retention` | anon now against the node's floor just after its last restart: what the process is holding and not using |
+| `chainActivity` | per-height totals over the whole chain: blocks seen, blocks carrying more than the miner's own reward, calls, gas, and calls bucketed by height |
+| `overlay.sessions.histogram` | session lengths in log buckets; the median is 33 s and the longest is over a day, so a linear histogram says nothing |
+| `overlay.rtt.byCeiling` | round trips split by whether the node was against its memory ceiling at the time |
+
+Snapshots also carry `darkfidStartedAt`, so a restart is an exact observation
+rather than something inferred from a drop in memory.
 
 ## Privacy
 
