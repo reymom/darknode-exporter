@@ -26,12 +26,14 @@ fi
 
 say "digest generator → /usr/local/bin/darknode-digest.py"
 sudo install -m 755 "$HERE/darknode-digest.py" /usr/local/bin/darknode-digest.py
+sudo install -m 755 "$HERE/darkfid-blocks.sh" /usr/local/bin/darkfid-blocks.sh
 
 say "systemd units → /etc/systemd/system/"
 sudo install -m 644 "$HERE/darknode-export.service" /etc/systemd/system/darknode-export.service
 sudo install -m 644 "$HERE/darknode-export.timer" /etc/systemd/system/darknode-export.timer
 sudo install -m 644 "$HERE/darknode-digest.service" /etc/systemd/system/darknode-digest.service
 sudo install -m 644 "$HERE/darknode-digest.timer" /etc/systemd/system/darknode-digest.timer
+sudo install -m 644 "$HERE/darkfid-blocks.service" /etc/systemd/system/darkfid-blocks.service
 
 if [[ -f /etc/darknode-export.env ]]; then
   say "/etc/darknode-export.env already exists — leaving it untouched"

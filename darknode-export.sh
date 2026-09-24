@@ -195,6 +195,18 @@ else
 fi
 throttled="${throttled_raw:-}"
 
+# ---------- darkfid start time ----------
+# When the unit last entered active state, in epoch ms. A change in this value
+# is a restart, exactly — the digest used to infer one from a drop in anon,
+# which misses any restart that does not free two gigabytes.
+darkfid_started=""
+if started_raw="$(systemctl show darkfid -p ActiveEnterTimestamp --value 2>/dev/null)" \
+   && [[ -n "$started_raw" ]]; then
+  if started_epoch="$(date -d "$started_raw" +%s 2>/dev/null)"; then
+    darkfid_started="$(( started_epoch * 1000 ))"
+  fi
+fi
+
 # ---------- darkfid height / tip / peers ----------
 # Order of preference:
 #   1. DARKFID_HEIGHT_CMD — user-provided one-liner override.
@@ -337,6 +349,7 @@ exported_at=$(($(date +%s) * 1000))
 payload="$(
   jq -cn \
     --argjson exportedAt "$exported_at" \
+    --arg darkfidStarted "$darkfid_started" \
     --argjson summary "$summary_json" \
     --argjson threads "$threads_json" \
     --argjson darkCur "$dark_cur" \
@@ -411,6 +424,7 @@ payload="$(
     + (if $tip != "" then {tip: ($tip|tonumber)} else {} end)
     + (if $peers != "" then {peers: ($peers|tonumber)} else {} end)
     + (if $difficulty != "" then {difficulty: ($difficulty|tonumber)} else {} end)
+    + (if $darkfidStarted != "" then {darkfidStartedAt: ($darkfidStarted|tonumber)} else {} end)
     | with_entries(select(.value != null))
   '
 )"

@@ -1,0 +1,15 @@
+[Unit]
+Description=Record what each block darkfid applies carried: calls and gas
+PartOf=darkfid.service
+After=darkfid.service
+
+[Service]
+ExecStart=/usr/local/bin/darkfid-blocks.sh
+Restart=always
+RestartSec=10
+# It holds one line at a time; anything more is a bug.
+MemoryMax=64M
+Nice=10
+
+[Install]
+WantedBy=multi-user.target
