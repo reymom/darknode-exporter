@@ -114,7 +114,7 @@ optional:
 | Field | What it is |
 |---|---|
 | `series.hashrate`, `series.difficulty` | the miner's hash rate and the network difficulty it is working against, per bucket |
-| `series.blocksPerHour` | block production, counted **only** across samples where the node was within 5 blocks of the tip — a node catching up moves faster than the network makes blocks, and that is its own speed |
+| `series.blocksPerHour` | block production, counted only across samples where the node was within 5 blocks of the tip **and** moving no faster than four times the chain's target. The lag test alone is not enough: while resyncing, darkfid reports its own chain, so height equals tip and a node replaying thousands of blocks looks caught up |
 | `retention` | anon now against the node's floor just after its last restart: what the process is holding and not using |
 | `chainActivity` | per-height totals over the whole chain: blocks seen, blocks carrying more than the miner's own reward, calls, gas, and calls bucketed by height |
 | `overlay.sessions.histogram` | session lengths in log buckets; the median is 33 s and the longest is over a day, so a linear histogram says nothing |

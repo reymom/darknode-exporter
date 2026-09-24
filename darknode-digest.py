@@ -61,6 +61,9 @@ ZOOM_MS = 48 * 3_600_000
 AT_TIP = 5
 # A bucket needs this many hours of usable samples before a rate is emitted.
 MIN_RATE_H = 0.05
+# The chain targets a block every 120 s, i.e. 0.5/min. Four times that is still
+# a plausible run of luck; an order of magnitude above it is a node catching up.
+MAX_NET_BLOCKS_PER_MIN = 2.0
 # How long after a restart to look for the node's floor, and how quiet the
 # window has to be for that floor to mean anything.
 RETENTION_WINDOW_MS = 30 * 60_000
@@ -228,6 +231,12 @@ def build_series(snaps: list[Snap], t0: int, t1: int) -> dict:
         delta = b.height - a.height
         if delta < 0:            # a resync replaying the chain
             continue
+        # The lag test is not enough on its own: while resyncing, darkfid's RPC
+        # reports its own chain, so height == tip and the node looks caught up
+        # while it is replaying thousands of blocks. The network cannot exceed
+        # its own target for long, so anything far above it is catch-up.
+        if delta / (dt / 60_000) > MAX_NET_BLOCKS_PER_MIN:
+            continue
         i = int((b.t - t0) // step)
         if 0 <= i < n:
             produced[i] += delta
@@ -302,6 +311,29 @@ def find_episodes(snaps: list[Snap]) -> list[dict]:
         cur["peakMiB"] = round(cur["peakMiB"])
         eps.append(cur)
 
+    # --- restarts the node reports itself ---------------------------------
+    # Since 24-S every snapshot carries darkfidStartedAt, so a restart is an
+    # observation rather than something inferred from a drop in memory. The
+    # heuristic below still runs, for the 66 days that predate the field, and
+    # anything it finds within a few minutes of a reported restart is the same
+    # event seen twice.
+    reported: list[int] = []
+    prev_started = None
+    for r in snaps:
+        if r.started and prev_started and r.started != prev_started:
+            reported.append(r.started)
+            eps.append({
+                "kind": "restart",
+                "from": r.started,
+                "to": r.started,
+                "note": "darkfid reported a new start time",
+            })
+        if r.started:
+            prev_started = r.started
+
+    def already_reported(t: int) -> bool:
+        return any(abs(t - r) < 5 * 60_000 for r in reported)
+
     # --- restarts (anon collapse) + how fast the chain caught up ----------
     # The note says only what was measured. It used to read "before the cgroup
     # wall", on the belief that every restart was memguard's. Thirty of them were
@@ -315,6 +347,9 @@ def find_episodes(snaps: list[Snap]) -> list[dict]:
         a_mib = a / MIB
         if prev_anon is not None and prev_anon - a_mib > RESTART_DROP_MIB:
             t = r.t
+            if already_reported(t):
+                prev_anon, prev_t = a_mib, r.t
+                continue
             h_now = r.height
             recovered = None
             # Only meaningful if the recording was continuous across the catch-up.
@@ -833,10 +868,12 @@ def build_digest(store: str) -> dict:
     expected = int(span / 60_000)
     gaps = sum(1 for a, b in zip(snaps, snaps[1:]) if b.t - a.t > GAP_MS)
 
-    dark0 = next((r for r in snaps if r.dark), None)
+    # The limits in force now, not the ones the window opened with: they have
+    # changed four times, and a summary that quotes July is wrong today.
+    dark_last = next((r for r in reversed(snaps) if r.dark and (r.high or r.max)), None)
     limits = {
-        "high": round(((dark0.high if dark0 else None) or 0) / MIB),
-        "max": round(((dark0.max if dark0 else None) or 0) / MIB),
+        "high": round(((dark_last.high if dark_last else None) or 0) / MIB),
+        "max": round(((dark_last.max if dark_last else None) or 0) / MIB),
     }
 
     heights = [r.height for r in snaps if r.height is not None]
