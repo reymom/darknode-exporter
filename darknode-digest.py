@@ -85,9 +85,16 @@ LIMIT_OVERRIDES = [
     (1790030700_000, 1790054840_000, 0, 7 * GIB),           # 22:45Z → reboot 05:27Z, no soft limit
 ]
 
-# Things that changed the node, drawn on the memory chart.
+# Things that changed the node, drawn on the memory chart. Times are from the
+# session log and are good to a few minutes, which is the resolution the chart
+# has anyway. Only changes that show up in the memory series belong here.
 MARKERS = [
-    {"at": 1790005834_000, "label": "sled → fjall"},  # fjall darkfid up, 21-S 15:50:34Z
+    {"at": 1789411200_000, "label": "NVMe lost"},
+    {"at": 1789577760_000, "label": "HMB fix, 64 MiB"},
+    {"at": 1790005800_000, "label": "sled → fjall"},
+    {"at": 1790230800_000, "label": "jemalloc"},
+    {"at": 1790265600_000, "label": "ceilings 4.2/4.8 G"},
+    {"at": 1790272020_000, "label": "miner back"},
 ]
 
 
