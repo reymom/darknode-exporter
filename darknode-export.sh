@@ -367,6 +367,7 @@ payload="$(
   jq -cn \
     --argjson exportedAt "$exported_at" \
     --arg darkfidStarted "$darkfid_started" \
+    --arg nodeId "${NODE_ID:-}" \
     --arg srcHeight "$src_height" \
     --arg srcTip "$src_tip" \
     --arg srcPeers "$src_peers" \
@@ -445,6 +446,7 @@ payload="$(
     + (if $peers != "" then {peers: ($peers|tonumber)} else {} end)
     + (if $difficulty != "" then {difficulty: ($difficulty|tonumber)} else {} end)
     + (if $darkfidStarted != "" then {darkfidStartedAt: ($darkfidStarted|tonumber)} else {} end)
+    + (if $nodeId != "" then {node: $nodeId} else {} end)
     + ({sources: (
           (if $srcHeight != "" then {height: $srcHeight} else {} end)
         + (if $srcTip != "" then {tip: $srcTip} else {} end)
