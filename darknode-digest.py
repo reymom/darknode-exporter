@@ -997,6 +997,7 @@ def build_digest(store: str) -> dict:
 
     return {
         "v": SCHEMA_VERSION,
+        **({"node": os.environ["NODE_ID"]} if os.environ.get("NODE_ID") else {}),
         "generatedAt": int(time.time() * 1000),
         "window": {"from": t0, "to": t1},
         "coverage": {
