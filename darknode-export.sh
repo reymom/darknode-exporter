@@ -34,6 +34,12 @@ fi
 : "${XMRIG_API:=http://127.0.0.1:18088}"
 : "${DARKFID_UNIT:=darkfid.service}"
 : "${XMRIG_UNIT:=xmrig.service}"
+# A unit name without its suffix works for `systemctl show` and NOT for a cgroup
+# path, so a loose DARKFID_UNIT=darkfid silently zeroed anon/cache while current
+# and peak stayed right — which reads as "this node uses no anonymous memory"
+# rather than as a bug. Normalise once, here. (Found on darkfi-obs, 27-S.)
+[[ "$DARKFID_UNIT" == *.* ]] || DARKFID_UNIT="${DARKFID_UNIT}.service"
+[[ "$XMRIG_UNIT" == *.* ]] || XMRIG_UNIT="${XMRIG_UNIT}.service"
 : "${DARKFID_RPC_PORT:=18345}"
 : "${DARKFID_P2P_PORT:=18340}"
 : "${WASM_TAIL_N:=12}"
