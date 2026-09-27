@@ -339,10 +339,22 @@ fi
 # zero. Failure to measure is still absence, but it has to be a real failure:
 # `ss | wc -l` returns 0 both when there are no sessions and when ss errors out,
 # so the two are separated on ss's exit status rather than on its output.
+#
+# 2026-09-27: a node running over Tor has NOTHING on the P2P port. The session is
+# a SOCKS connection to the local proxy and the port lives inside the SOCKS
+# request, so this counted zero while the node was exchanging messages happily —
+# the panel showed "0 peers" through a whole recording. The same mistake, made in
+# a test harness the same evening, threw away a working run. Sessions darkfid
+# holds open to a local anonymity proxy are counted too; 9050 is Tor, 1080 Nym,
+# 4447 I2P, the three the config offers.
 if [[ -z "$peers" ]]; then
   if ss_out="$(ss -Htn state established \
         "( dport = :${DARKFID_P2P_PORT} or sport = :${DARKFID_P2P_PORT} )" 2>/dev/null)"; then
     peers="$(printf '%s' "$ss_out" | grep -c . || true)"
+    proxied="$(ss -Htnp state established \
+        '( dport = :9050 or dport = :1080 or dport = :4447 )' 2>/dev/null \
+        | grep -c 'darkfid' || true)"
+    peers=$(( peers + proxied ))
     src_peers="ss"
   else
     peers=""   # could not measure — distinct from measured zero
