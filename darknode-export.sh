@@ -340,24 +340,48 @@ fi
 # `ss | wc -l` returns 0 both when there are no sessions and when ss errors out,
 # so the two are separated on ss's exit status rather than on its output.
 #
-# 2026-09-27: a node running over Tor has NOTHING on the P2P port. The session is
-# a SOCKS connection to the local proxy and the port lives inside the SOCKS
-# request, so this counted zero while the node was exchanging messages happily —
-# the panel showed "0 peers" through a whole recording. The same mistake, made in
-# a test harness the same evening, threw away a working run. Sessions darkfid
-# holds open to a local anonymity proxy are counted too; 9050 is Tor, 1080 Nym,
-# 4447 I2P, the three the config offers.
+# 2026-09-28: the socket count is a CLEARNET measurement. Over Tor darkfid uses
+# its embedded client (arti) and connects straight to relays on their own ports,
+# so nothing is on the P2P port and the panel showed a working node with 0 peers
+# through a whole recording. An earlier fix here counted connections to a SOCKS
+# proxy, which was wrong for the same reason: no proxy is involved.
+#
+# dnet sees the channels whatever carries them, and it is a FALLBACK rather than
+# a replacement: it counts channels by the address as configured, so four seed
+# hostnames resolving to two machines come out as four, while ss counts sockets
+# by resolved IP and comes out as two. On clearnet the socket count is what
+# "peers" has always meant, so it stands. dnet only answers when ss measured a
+# zero and something was plainly still talking.
 if [[ -z "$peers" ]]; then
   if ss_out="$(ss -Htn state established \
         "( dport = :${DARKFID_P2P_PORT} or sport = :${DARKFID_P2P_PORT} )" 2>/dev/null)"; then
     peers="$(printf '%s' "$ss_out" | grep -c . || true)"
-    proxied="$(ss -Htnp state established \
-        '( dport = :9050 or dport = :1080 or dport = :4447 )' 2>/dev/null \
-        | grep -c 'darkfid' || true)"
-    peers=$(( peers + proxied ))
     src_peers="ss"
   else
     peers=""   # could not measure — distinct from measured zero
+  fi
+fi
+
+if [[ "$peers" == "0" ]]; then
+  dnet_log="$(ls -t "${HISTORY_DIR:-/var/log/darknode}"/dnet-*.jsonl 2>/dev/null | head -1)"
+  if [[ -n "$dnet_log" && -r "$dnet_log" ]]; then
+    dnet_n="$(tail -3000 "$dnet_log" 2>/dev/null | awk -v cut=$(( $(date +%s) * 1000 - 60000 )) '
+      {
+        if (match($0, /"rx"[: ]*[0-9]+/)) {
+          v = substr($0, RSTART, RLENGTH); gsub(/[^0-9]/, "", v)
+          if (v + 0 < cut) next
+        } else next
+        if (match($0, /"addr"[: ]*"[^"]+"/)) {
+          a = substr($0, RSTART, RLENGTH)
+          sub(/^"addr"[: ]*"/, "", a); sub(/"$/, "", a)
+          seen[a] = 1
+        }
+      }
+      END { n = 0; for (a in seen) n++; print n }' || true)"
+    if [[ -n "$dnet_n" && "$dnet_n" != "0" ]]; then
+      peers="$dnet_n"
+      src_peers="dnet"
+    fi
   fi
 fi
 
