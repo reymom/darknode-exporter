@@ -1,0 +1,20 @@
+[Unit]
+Description=Feed the live graph with dnet events
+# darkfid going away takes the dnet stream with it, so this follows its lifecycle.
+PartOf=darkfid.service
+After=darkfid.service
+# No give-up: darkfid restarting is normal, not a failure of this unit.
+StartLimitIntervalSec=0
+StartLimitBurst=0
+
+[Service]
+Environment=NODE_ID=darknode
+Environment=DNET_DIR=/var/log/darknode
+EnvironmentFile=/etc/node-pulse.env
+ExecStart=/usr/bin/python3 /usr/local/bin/node-pulse.py
+Restart=always
+RestartSec=5
+MemoryMax=128M
+
+[Install]
+WantedBy=multi-user.target
