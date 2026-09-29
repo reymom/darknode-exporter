@@ -35,6 +35,33 @@ So take the snapshot just before that stretch. `snapshot.sh` does the copying;
 finding where the stretch is on your chain is a matter of looking for where calls per block
 jump, and `collector/darkfid-blocks.sh` next door logs exactly that.
 
+## Where the time goes
+
+`bench.sh` says whether the node survived and what it held. It does not say what the wall
+clock was spent on, and at the dev meeting on 28 September that was the question: is the time
+in the network, in writing to disk, or in validation.
+
+`phase-sampler.sh` answers it from counters the kernel already keeps, so nothing has to be
+patched into the node:
+
+```bash
+OUT=~/darkfid-bench/phases-myarm.tsv ./phase-sampler.sh &
+./bench.sh myarm LD_PRELOAD=...
+./phases.py ~/darkfid-bench/phases-*.tsv
+```
+
+| what | from | means |
+|---|---|---|
+| cpu | cgroup `cpu.stat` `usage_usec` | work done across every thread, so on a two-core box it can exceed the wall clock |
+| busy | cpu ÷ (wall × cores) | saturated means computing, not waiting |
+| io stalled | cgroup `io.pressure`, PSI "some" | share of wall where at least one task was blocked on the block layer. An upper bound on disk cost, not time lost |
+| disk read/written | `/proc/<pid>/io` | real block-layer bytes, not page-cache traffic |
+| net in/out | the interface counters | **machine-wide, not per-process**, because `/proc/<pid>/net` is a namespace. Fair on a box whose job is one node, and labelled rather than passed off as per-process |
+
+The validation half of that question is already answered per call and at a finer grain:
+starting the WASM runtime is 66.9 ms of a 129 ms reward call, and the module is recompiled
+every time. See `module-cache.patch` and the numbers with it.
+
 ## Configuration
 
 All environment variables, all with defaults that suit a stock install.
