@@ -47,6 +47,33 @@ def load(path: str) -> list[dict]:
     return rows
 
 
+def sync_segment(rows: list[dict]) -> list[dict]:
+    """The part of the file that is this arm's sync, and nothing else.
+
+    A sampler file spans the restart: the node is stopped, the database is put
+    back, and the node starts again. Across that boundary the height jumps DOWN
+    by thousands of blocks and every per-process counter resets to zero, so a
+    plain last-minus-first reads as a large negative number and quietly produces
+    nonsense. The first version of this script did exactly that.
+
+    So: cut at the last point where the height fell, and take what follows.
+    """
+    hs = [(i, r.get("height")) for i, r in enumerate(rows) if r.get("height") is not None]
+    cut = 0
+    for k in range(1, len(hs)):
+        if hs[k][1] < hs[k - 1][1]:
+            cut = hs[k][0]
+    seg = rows[cut:]
+    # and inside it, a counter that still falls means a restart we did not see
+    for key in ("cpu_usec", "disk_rd", "disk_wr"):
+        xs = [(i, r[key]) for i, r in enumerate(seg) if r.get(key) is not None]
+        for k in range(1, len(xs)):
+            if xs[k][1] < xs[k - 1][1]:
+                seg = seg[xs[k][0]:]
+                break
+    return seg
+
+
 def delta(rows: list[dict], key: str) -> int:
     xs = [r[key] for r in rows if r.get(key) is not None]
     return (xs[-1] - xs[0]) if len(xs) >= 2 else 0
@@ -68,7 +95,7 @@ def main() -> None:
     print()
 
     for p in sorted(paths):
-        rows = load(p)
+        rows = sync_segment(load(p))
         if len(rows) < 3:
             print(f"{os.path.basename(p)}: too few samples")
             continue

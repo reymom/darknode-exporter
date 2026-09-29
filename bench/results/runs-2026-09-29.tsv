@@ -1,0 +1,4 @@
+label	start	end	secs	peak_anon_mib	final_anon_mib	outcome	cpu_s	env
+glibc-unrestricted	1790694357	1790695018	661	3101	0	KILLED at height 64721	502	none
+jemalloc-default	1790695045	1790695927	882	2388	898	PASSED at height 65042	738	LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2
+jemalloc-tuned	1790695957	1790696959	1002	2351	841	PASSED at height 65000	812	LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2 MALLOC_CONF=background_thread:true,dirty_decay_ms:0,muzzy_decay_ms:0

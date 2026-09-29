@@ -1,76 +1,93 @@
-# bench — does your node fit on this box?
+# bench
 
-A darkfid node's memory is not decided by the node alone. It is decided by the storage
-engine, by the memory allocator underneath it, and by the four hundred blocks on the chain
-that carry almost all the transactions. This is the rig that separates those.
+Measuring what it costs a `darkfid` node to stay on the chain, on hardware small enough that
+the cost decides whether it works at all.
 
-It exists because on a 4 GB server the default configuration **died four syncs out of seven**,
-and one line of configuration fixed it, and neither of those was written down anywhere.
+Every result below is reproducible with the scripts in this directory. The raw series and
+run logs are in [`results/`](results/).
 
-## What it does
+## Results
 
-One arm = restore the same chain database, start the node under one environment, watch until
-it clears a height or dies, record what it cost.
+**The allocator decides whether a 4 GB machine finishes the sync.** Three configurations,
+same restored database, same 4 GB x86 VPS, 29 September 2026, `darkfid 0.5.0` built 25
+September, fjall backend.
+
+| configuration | outcome | wall | blocks | peak anon | held after | ms/block |
+|---|---|---|---|---|---|---|
+| glibc, as it ships | **killed at 64,721** | 481 s | 163 | 3,101 MiB | — | 2,951 |
+| `LD_PRELOAD` jemalloc | passed | 669 s | 477 | 2,388 MiB | 898 MiB | **1,403** |
+| jemalloc, decay tuned¹ | passed | 725 s | 437 | 2,351 MiB | 841 MiB | 1,659 |
+
+¹ `MALLOC_CONF=background_thread:true,dirty_decay_ms:0,muzzy_decay_ms:0`
+
+**Tuning jemalloc is not worth it here.** Returning pages to the kernel immediately buys
+40 MiB of peak and costs **18% more time per block**. The default configuration is the one to
+take.
+
+**Where the wall clock goes**, from cgroup `cpu.stat`, `io.pressure` and `/proc/<pid>/io`
+over the same three runs:
+
+| | glibc | jemalloc | jemalloc tuned |
+|---|---|---|---|
+| CPU busy, 2 cores | 49% | 53% | 54% |
+| stalled on block I/O | 8.5% of wall | 5.0% | 4.1% |
+| received per block | 58 KiB | 32 KiB | 35 KiB |
+| written per block | 5.9 MiB | 7.2 MiB | 7.7 MiB |
+
+**It is not the network and it is not waiting on disk.** The node receives about 32 KiB per
+block and spends the wall clock computing. Two things follow and both are worth a look:
+
+- **Write amplification is roughly 200×**: 32 KiB in, 7.2 MiB out to disk, per block.
+- **52% of a contract call is starting the WASM runtime**, 66.9 ms of a 129 ms `PoWRewardV1`
+  call, n = 14,048, decomposed from the journal's microsecond stamps. The module is
+  recompiled on every call, so a sync from genesis compiles the same contract 73,038 times.
+
+**Keeping the compiled module takes 19.5% off the wall clock** for the same stretch, same
+binary and same allocator. `module-cache.patch` is the change.
+
+| arm | wall | peak anon | held after |
+|---|---|---|---|
+| module cache off | 821 s | 2,418 MiB | 913 MiB |
+| module cache on | **661 s** | 2,463 MiB | 957 MiB |
+| cranelift instead of the cache | 742 s | 2,819 MiB | 950 MiB |
+
+The unit that has to be kept is the `(engine, module)` pair, one per contract, because
+wasmer's `Metering` middleware holds per-module state and panics if one engine serves two
+modules. The cache key is the contract's wasm bytes. **Its untested edge is invalidation:** a
+redeployment of the same contract is different wasm bytes and therefore a different key,
+which should be correct and has not been exercised.
+
+## Running it
 
 ```bash
 ./snapshot.sh save                    # once: the restore point every arm starts from
-./sampler.sh &                        # memory every 5 s, so you get the shape not just a peak
+./sampler.sh &                        # memory every 5 s
+./phase-sampler.sh &                  # cpu, io stall, disk and network
 
-./bench.sh glibc                                                  # as it ships
-./bench.sh arena1   MALLOC_ARENA_MAX=1
+./bench.sh glibc
 ./bench.sh jemalloc LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2
-```
-
-Each run appends a row to `runs.tsv`: label, seconds, peak anon, anon at the end, outcome,
-CPU seconds and the environment that produced it.
-
-## The one thing that makes it a measurement
-
-**Every arm starts from the same database.** Of about 73,000 blocks on this chain, roughly
-four hundred — 64,400 to 64,800 — carry nearly all the contract calls, and that is where a
-small box dies. An arm that starts at a different height meets a different amount of that
-work, and then you are not comparing allocators, you are comparing starting points.
-
-So take the snapshot just before that stretch. `snapshot.sh` does the copying;
-finding where the stretch is on your chain is a matter of looking for where calls per block
-jump, and `collector/darkfid-blocks.sh` next door logs exactly that.
-
-## Where the time goes
-
-`bench.sh` says whether the node survived and what it held. It does not say what the wall
-clock was spent on, and at the dev meeting on 28 September that was the question: is the time
-in the network, in writing to disk, or in validation.
-
-`phase-sampler.sh` answers it from counters the kernel already keeps, so nothing has to be
-patched into the node:
-
-```bash
-OUT=~/darkfid-bench/phases-myarm.tsv ./phase-sampler.sh &
-./bench.sh myarm LD_PRELOAD=...
 ./phases.py ~/darkfid-bench/phases-*.tsv
 ```
 
-| what | from | means |
-|---|---|---|
-| cpu | cgroup `cpu.stat` `usage_usec` | work done across every thread, so on a two-core box it can exceed the wall clock |
-| busy | cpu ÷ (wall × cores) | saturated means computing, not waiting |
-| io stalled | cgroup `io.pressure`, PSI "some" | share of wall where at least one task was blocked on the block layer. An upper bound on disk cost, not time lost |
-| disk read/written | `/proc/<pid>/io` | real block-layer bytes, not page-cache traffic |
-| net in/out | the interface counters | **machine-wide, not per-process**, because `/proc/<pid>/net` is a namespace. Fair on a box whose job is one node, and labelled rather than passed off as per-process |
+Each arm appends a row to `runs.tsv` with the label, wall time, peak anon, anon at the end,
+outcome, CPU seconds and the environment that produced it.
 
-**On a Raspberry Pi the stall columns come back empty**, because PSI needs `psi=1` on the
-kernel command line and Raspberry Pi OS does not set it. The sampler degrades rather than
-failing, so CPU, disk bytes and network still come through. This is the second time that
-board has needed a boot parameter before it could measure itself, after
-`cgroup_enable=memory` for the memory controller.
+## Why every arm restores the same database
 
-The validation half of that question is already answered per call and at a finer grain:
-starting the WASM runtime is 66.9 ms of a 129 ms reward call, and the module is recompiled
-every time. See `module-cache.patch` and the numbers with it.
+Of about 73,000 blocks on this chain, roughly four hundred — 64,400 to 64,800 — carry nearly
+all the contract calls, and that is where a small machine fails. An arm that starts at a
+different height meets a different amount of that work, so without a common restore point the
+comparison is between starting points rather than between configurations.
+
+`snapshot.sh` handles the copying. Finding the stretch on another chain is a matter of
+looking for where calls per block jump, which `collector/darkfid-blocks.sh` logs.
+
+**The rig refuses to start when another systemd drop-in is in force**, because a leftover
+`LD_PRELOAD` makes a control arm run as the treatment while reporting itself as the control.
+`BENCH_TAKEOVER=1` moves them aside for the run and restores them on exit. Every arm prints
+the environment actually in force before it starts.
 
 ## Configuration
-
-All environment variables, all with defaults that suit a stock install.
 
 | | |
 |---|---|
@@ -81,40 +98,33 @@ All environment variables, all with defaults that suit a stock install.
 | `TARGET_HEIGHT` | the height that counts as passing, default 65000 |
 | `TIMEOUT_MIN` | give up after this, default 30 |
 
-## What is in `results/`
+## Scope and limits
 
-The series behind [the measurements published in September 2026](https://reymom.xyz/darknode).
-Two machines: an 8 GB ARM Raspberry Pi 5 and a 4 GB x86 VPS.
+- **Three configurations on x86 only.** The ARM board has no snapshot at a comparable height
+  and making one means a full resync from genesis, so its curves in `results/` come from
+  complete syncs rather than from this rig.
+- **Small n.** For the 4 GB box the logs hold: glibc 0 of 2 syncs completed,
+  `MALLOC_ARENA_MAX=1` 3 of 3, `MALLOC_ARENA_MAX=2` 1 of 1, jemalloc 1 of 1, plus the three
+  arms above. All of it is recountable from the files.
+- **Network figures are machine-wide**, taken from the interface counters, because
+  `/proc/<pid>/net` is a namespace rather than a process. On a machine whose only job is the
+  node it is a fair proxy, and it is not a per-process measurement.
+- **PSI must be enabled** for the stall columns. Kernels booted without `psi=1` do not have
+  it, and the sampler leaves those columns empty rather than failing.
+
+## What is in `results/`
 
 | file | what it is |
 |---|---|
-| `curve-*.tsv` | anon MiB against block height through the dense stretch, one file per allocator on the 4 GB box |
+| `runs-2026-09-29.tsv` | the three arms in the first table |
+| `phases-*.tsv.gz` | cpu, io stall, disk and network every 5 s through each of them |
+| `curve-*.tsv` | anon MiB against block height, one file per allocator |
 | `wide-vps-*.tsv`, `wide-pi-*.tsv` | the same, genesis to tip, on each machine |
-| `tx-density-20.tsv`, `wide-tx-200.tsv` | contract calls per block — why the peak is where it is |
-| `mem-5s-runs.tsv.gz` | the raw 5-second sampler output covering those runs |
-| `runs.log` | the raw outcomes, exactly as the rig wrote them |
-
-**Reading `runs.log` honestly.** It is the unedited record, so `PASO` is passed and `MUERTO`
-is killed, and **the three `wasm-*` rows lasting 20 seconds are not data** — those are failed
-starts before a rebuild finished, and they were re-run. The rows with a real duration are the
-arms. This file is the box's runs; the Pi's are in the `wide-pi-*` curves.
-
-## The module cache
-
-`module-cache.patch` is a separate experiment against the same rig: darkfid compiles the WASM
-module on every contract call, and keeping the compiled module takes a call from **121.2 ms
-to 61.6**, measured over three arms with the allocator held constant at jemalloc so nothing
-is confounded by an OOM.
-
-The unit that has to be kept is the **(engine, module) pair, one per contract** — wasmer's
-`Metering` middleware holds per-module state and panics if one engine serves two modules —
-and the cache key is the contract's wasm bytes.
-
-**Its untested edge is invalidation.** A redeployment of the same contract is different wasm
-bytes and therefore a different key, which should be right, and it has not been exercised.
-Said out loud rather than buried, because it is the part that would break.
+| `tx-density-20.tsv`, `wide-tx-200.tsv` | contract calls per block |
+| `mem-5s-runs.tsv.gz` | raw 5-second sampler output covering the September runs |
+| `runs.log` | the September run log, unedited. `PASO` is passed, `MUERTO` is killed, and three `wasm-*` rows lasting 20 seconds are failed starts rather than data |
 
 ## Requirements
 
-Linux, systemd, a darkfid you can stop and start, cgroup v2 with the memory controller on,
-and enough disk for a second copy of the chain database.
+Linux with systemd, a `darkfid` you can stop and start, cgroup v2 with the memory controller
+enabled, and enough disk for a second copy of the chain database.
