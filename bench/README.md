@@ -1,7 +1,6 @@
 # bench
 
-Measuring what it costs a `darkfid` node to stay on the chain, on hardware small enough that
-the cost decides whether it works at all.
+Measuring what it costs a `darkfid` node to stay on the chain.
 
 Every result below is reproducible with the scripts in this directory. The raw series and
 run logs are in [`results/`](results/).
@@ -20,9 +19,10 @@ September, fjall backend.
 
 ¹ `MALLOC_CONF=background_thread:true,dirty_decay_ms:0,muzzy_decay_ms:0`
 
-**Tuning jemalloc is not worth it here.** Returning pages to the kernel immediately buys
-40 MiB of peak and costs **18% more time per block**. The default configuration is the one to
-take.
+**Tuning jemalloc did not pay off in this run.** Returning pages to the kernel immediately
+buys 40 MiB of peak and costs **18% more time per block**, so the default configuration seems
+to be the most optimal of the three. These are three points in a large space and I have not
+swept it.
 
 **Where the wall clock goes**, from cgroup `cpu.stat`, `io.pressure` and `/proc/<pid>/io`
 over the same three runs:
@@ -43,7 +43,7 @@ block and spends the wall clock computing. Two things follow and both are worth 
   recompiled on every call, so a sync from genesis compiles the same contract 73,038 times.
 
 **Keeping the compiled module takes 19.5% off the wall clock** for the same stretch, same
-binary and same allocator. `module-cache.patch` is the change.
+binary and same allocator. `module-cache.patch` is the change I used for that measurement.
 
 | arm | wall | peak anon | held after |
 |---|---|---|---|

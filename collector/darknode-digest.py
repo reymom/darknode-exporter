@@ -108,7 +108,7 @@ def iter_jsonl(path: str):
     The first version loaded the entire store into one list. With 55 days of
     dnet events (~200k a day) that no longer fits in 8 GB: from mid-August the
     daily run filled RAM and swap, the Pi stopped petting its hardware watchdog
-    and rebooted — nearly every morning, for five weeks ().
+    and rebooted — nearly every morning, for five weeks.
     """
     opener = gzip.open if path.endswith(".gz") else open
     try:

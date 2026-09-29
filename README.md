@@ -1,7 +1,8 @@
 # darkscope
 
-Watch every DarkFi node you run on one live graph, drawn from what the nodes already
-report about themselves, on hardware you own.
+Telemetry, visualisation and benchmarking for DarkFi nodes. Every node you run on one live
+graph, drawn from what the nodes already report about themselves, and a bench rig for
+measuring what it costs them to stay on the chain.
 
 ```bash
 git clone https://github.com/reymom/darkscope && cd darkscope && ./install.sh
@@ -18,16 +19,14 @@ only need npm if you want to change the graph.
 
 ## Why this exists
 
-I ran a node on a Raspberry Pi for three months and it told me things that were not written
-down anywhere, like that its memory was tracking whatever ceiling I gave it rather than what
-it needed, and that a four gigabyte server dies in the same four hundred blocks every time,
-and that one transaction of mine announced which machine it had come from. I could not see
-any of that until I could see the node.
+I ran nodes for three months and a few things only became visible once I could watch them:
+the memory was tracking whatever ceiling it was given rather than what it needed, a four
+gigabyte host fails in the same four hundred blocks every time, and one transaction of mine
+announced which machine it had come from.
 
-The failure modes that only appear when a machine is short of room have very few people
-looking at them, because the people building these systems are working on machines that have
-room, which is reasonable. So every operator who can see their own node is another pair of
-eyes, and this is the seeing part.
+Failure modes can appear on any hardware and can go underseen, and they are easier to miss on
+a machine that is short of room. An operator who can watch their own node is another pair of
+eyes on that, so this is the watching part.
 
 ## What you get
 
@@ -64,9 +63,10 @@ names survive a restart, and it never leaves that machine. The server drops any 
 peer name does not look like a pseudonym, so this does not rest on one function in one
 process.
 
-That matters more than it sounds, because a panel like this is a deanonymization surface and
-getting it wrong is easy. There is an open issue about the parts of it I have not fixed yet,
-and it is about this repository rather than about anyone else's code.
+A panel like this is still a deanonymization surface and getting it wrong is easy. There is
+an open issue to tackle deanonymization through telemetry correlation:
+[#1](https://github.com/reymom/darkscope/issues/1). The full walk through the boundaries is
+in [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md).
 
 ## Layout
 
@@ -91,7 +91,7 @@ server/       receives from every machine, holds five minutes, serves the panel
   server.py            stdlib only. Bearer token from collectors, read endpoints out
   machines.example.json
 panel/        the graph
-  src/                 three.js + 3d-force-graph. The same one at reymom.xyz/darknode
+  src/                 three.js + 3d-force-graph. The same one at reymom.xyz/darknode/live
   dist/                committed, so cloning needs no npm
 bench/        does your node fit on this box?
   bench.sh      one arm: same database, one environment, what it cost

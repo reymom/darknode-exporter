@@ -1,9 +1,10 @@
 # Threat model
 
 This is the threat model of darkscope, which means the collector, the server and the panel,
-and it says nothing about DarkFi itself. I wrote it for someone who is deciding whether to
-run this on a machine they care about, so it follows the data from the node to the person
-looking at the page, and at each step it says what crosses and how I know.
+and it says nothing about DarkFi itself. I wrote it having in mind someone who might be
+considering the potential security risks of running this, since it sits next to a client of a
+chain that revolves around privacy. It follows the data from the node to the person looking
+at the page, and at each step it says what crosses and how I know.
 
 I have not checked any of this against a live node. What I call tested I ran on 29-09-2026 on
 a development machine, against the code at commit `ddd9a80`, with events and addresses that I
