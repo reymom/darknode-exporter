@@ -107,6 +107,17 @@ t1=$(date +%s); secs=$((t1 - t0))
 final=$(awk '$1=="anon"{print int($2/1048576)}' "$CG/memory.stat" 2>/dev/null)
 cpu=$(( $(systemctl show "$DARKFID_UNIT" -p CPUUsageNSec --value 2>/dev/null || echo 0) / 1000000000 ))
 
+# Anything PartOf the node went down with it and systemd will not bring it back
+# on a plain start, so a rig that stops the node repeatedly leaves the machine's
+# collectors dead and the operator finds out from a panel that has gone quiet.
+for dep in $(systemctl list-dependencies --reverse --plain --no-legend "$DARKFID_UNIT" 2>/dev/null | tr -d ' '); do
+  [[ "$dep" == "$DARKFID_UNIT" || "$dep" != *.service ]] && continue
+  if [[ "$(systemctl is-enabled "$dep" 2>/dev/null)" == "enabled" ]] \
+     && [[ "$(systemctl is-active "$dep" 2>/dev/null)" != "active" ]]; then
+    systemctl start "$dep" 2>/dev/null && echo "   restarted $dep, which went down with the node"
+  fi
+done
+
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
   "$label" "$t0" "$t1" "$secs" "$peak" "${final:-0}" "$outcome" "$cpu" "${*:-none}" >> "$LOG"
 echo "$label: $outcome in ${secs}s · peak anon ${peak} MiB · holding ${final:-?} MiB at the end · cpu ${cpu}s"
