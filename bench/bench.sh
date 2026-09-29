@@ -42,15 +42,42 @@ mkdir -p "$(dirname "$LOG")"
 systemctl stop "$DARKFID_UNIT" 2>/dev/null; sleep 3
 rm -rf "$DB"; cp -a "$SNAPSHOT" "$DB"
 
-# The arm is one drop-in, written fresh every time, so nothing survives between
-# runs by accident. That has bitten people: a stale LD_PRELOAD makes the control
-# arm quietly be the treatment.
+# The arm is one drop-in, written fresh every time. Any OTHER drop-in on the unit
+# is also part of the environment, so an arm that leaves one in place is not
+# measuring what its label says: a leftover LD_PRELOAD turns the control into the
+# treatment and the run looks perfectly normal while it does it.
+#
+# So: refuse, and say what is in the way. BENCH_TAKEOVER=1 moves them aside for
+# the duration and puts them back on exit, including on an interrupt.
 mkdir -p "$(dirname "$DROPIN")"
 rm -f "$DROPIN"
+
+mapfile -t FOREIGN < <(find "$(dirname "$DROPIN")" -maxdepth 1 -name '*.conf' ! -name 'bench-arm.conf' 2>/dev/null)
+if [[ ${#FOREIGN[@]} -gt 0 ]]; then
+  if [[ "${BENCH_TAKEOVER:-0}" != "1" ]]; then
+    echo "refusing: $DARKFID_UNIT has drop-ins that are not mine, so this arm would not" >&2
+    echo "be measuring what you think. Move them, or set BENCH_TAKEOVER=1 to have me" >&2
+    echo "move them aside for the run and put them back afterwards:" >&2
+    printf '  %s\n' "${FOREIGN[@]}" >&2
+    exit 3
+  fi
+  restore_foreign() {
+    for f in "${FOREIGN[@]}"; do [[ -e "$f.bench-off" ]] && mv -f "$f.bench-off" "$f"; done
+    systemctl daemon-reload 2>/dev/null || true
+  }
+  trap restore_foreign EXIT INT TERM
+  for f in "${FOREIGN[@]}"; do mv -f "$f" "$f.bench-off"; done
+  echo "moved aside for this arm: ${FOREIGN[*]}"
+fi
+
 if [[ $# -gt 0 ]]; then
   { echo "[Service]"; for e in "$@"; do echo "Environment=$e"; done; } > "$DROPIN"
 fi
 systemctl daemon-reload
+
+# Say out loud what the node will actually run with, so a silent mismatch cannot
+# survive into the results.
+echo "   environment in force: $(systemctl show "$DARKFID_UNIT" -p Environment --value 2>/dev/null | tr '\n' ' ')"
 
 n0=$(wc -l < "$BLOCKS" 2>/dev/null || echo 0)
 t0=$(date +%s)

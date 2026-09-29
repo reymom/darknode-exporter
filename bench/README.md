@@ -58,6 +58,12 @@ OUT=~/darkfid-bench/phases-myarm.tsv ./phase-sampler.sh &
 | disk read/written | `/proc/<pid>/io` | real block-layer bytes, not page-cache traffic |
 | net in/out | the interface counters | **machine-wide, not per-process**, because `/proc/<pid>/net` is a namespace. Fair on a box whose job is one node, and labelled rather than passed off as per-process |
 
+**On a Raspberry Pi the stall columns come back empty**, because PSI needs `psi=1` on the
+kernel command line and Raspberry Pi OS does not set it. The sampler degrades rather than
+failing, so CPU, disk bytes and network still come through. This is the second time that
+board has needed a boot parameter before it could measure itself, after
+`cgroup_enable=memory` for the memory controller.
+
 The validation half of that question is already answered per call and at a finer grain:
 starting the WASM runtime is 66.9 ms of a 129 ms reward call, and the module is recompiled
 every time. See `module-cache.patch` and the numbers with it.
