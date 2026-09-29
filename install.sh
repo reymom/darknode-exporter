@@ -1,73 +1,119 @@
 #!/usr/bin/env bash
-# install.sh — install the darknode exporter from the files in THIS directory.
-# No git required on the Pi: get these files here first (scp from your laptop,
-# or download the repo tarball — see README), then run:  ./install.sh
+# install.sh — put darkscope on the machine that runs your node.
+#
+#   ./install.sh            everything you need to watch your own node, locally
+#   ./install.sh --publish  also push a summary to a site you run
+#
+# The default installs nothing that talks to the internet. The collector writes
+# to disk and the panel reads from disk, both on this machine, and that is the
+# whole loop. --publish adds the one piece that sends anything anywhere, and it
+# is opt-in on purpose.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-say() { printf '\n[install] %s\n' "$*"; }
+PUBLISH=0
+[[ "${1:-}" == "--publish" ]] && PUBLISH=1
 
-command -v curl >/dev/null || { echo "need curl"; exit 1; }
+say() { printf '\n[darkscope] %s\n' "$*"; }
+die() { printf '\n[darkscope] FATAL: %s\n' "$*" >&2; exit 1; }
+
+command -v curl >/dev/null || die "need curl"
+command -v python3 >/dev/null || die "need python3"
 if ! command -v jq >/dev/null; then
   say "jq not found — installing"
   sudo apt-get update -qq && sudo apt-get install -y jq
 fi
 
-say "collector → /usr/local/bin/darknode-export.sh"
-sudo install -m 755 "$HERE/darknode-export.sh" /usr/local/bin/darknode-export.sh
+# ---------- collector ---------------------------------------------------------
 
-say "smoke test: collector must emit a non-empty JSON object"
-if ! DRY_RUN=1 /usr/local/bin/darknode-export.sh 2>/dev/null \
-     | jq -e 'type == "object" and (keys | length > 0)' >/dev/null; then
-  echo "[install] FATAL: collector produced empty or invalid JSON — refusing to continue." >&2
-  echo "[install] inspect with: DRY_RUN=1 /usr/local/bin/darknode-export.sh | jq ." >&2
-  exit 1
-fi
+say "collector → /usr/local/bin/"
+sudo install -m 755 "$HERE/collector/darknode-export.sh" /usr/local/bin/darknode-export.sh
+sudo install -m 755 "$HERE/collector/dnet-record.sh"     /usr/local/bin/dnet-record.sh
+sudo install -m 755 "$HERE/collector/darknode-digest.py" /usr/local/bin/darknode-digest.py
+sudo install -m 755 "$HERE/collector/darkfid-blocks.sh"  /usr/local/bin/darkfid-blocks.sh
 
-say "digest generator → /usr/local/bin/darknode-digest.py"
-sudo install -m 755 "$HERE/darknode-digest.py" /usr/local/bin/darknode-digest.py
-sudo install -m 755 "$HERE/darkfid-blocks.sh" /usr/local/bin/darkfid-blocks.sh
+say "smoke test: the collector must emit a non-empty JSON object"
+DRY_RUN=1 /usr/local/bin/darknode-export.sh 2>/dev/null \
+  | jq -e 'type == "object" and (keys | length > 0)' >/dev/null \
+  || die "collector produced empty or invalid JSON. Inspect with:
+      DRY_RUN=1 /usr/local/bin/darknode-export.sh | jq ."
 
-say "systemd units → /etc/systemd/system/"
-sudo install -m 644 "$HERE/darknode-export.service" /etc/systemd/system/darknode-export.service
-sudo install -m 644 "$HERE/darknode-export.timer" /etc/systemd/system/darknode-export.timer
-sudo install -m 644 "$HERE/darknode-digest.service" /etc/systemd/system/darknode-digest.service
-sudo install -m 644 "$HERE/darknode-digest.timer" /etc/systemd/system/darknode-digest.timer
-sudo install -m 644 "$HERE/darkfid-blocks.service" /etc/systemd/system/darkfid-blocks.service
+say "units → /etc/systemd/system/"
+for u in darknode-export.service darknode-export.timer \
+         darknode-digest.service darknode-digest.timer \
+         darkfid-blocks.service dnet-record.service; do
+  sudo install -m 644 "$HERE/collector/$u" "/etc/systemd/system/$u"
+done
+[[ "$PUBLISH" == "1" ]] && sudo install -m 644 "$HERE/collector/node-pulse.service" /etc/systemd/system/node-pulse.service
+[[ "$PUBLISH" == "1" ]] && sudo install -m 755 "$HERE/collector/node-pulse.py" /usr/local/bin/node-pulse.py
+
+# ---------- panel -------------------------------------------------------------
+
+say "panel → /usr/local/share/darkscope/"
+sudo install -d -m 755 /usr/local/share/darkscope
+sudo install -m 755 "$HERE/panel/serve.py"   /usr/local/share/darkscope/serve.py
+sudo install -m 644 "$HERE/panel/index.html" /usr/local/share/darkscope/index.html
+sudo install -m 644 "$HERE/panel/app.js"     /usr/local/share/darkscope/app.js
+sudo install -m 644 "$HERE/panel/darkscope-panel.service" /etc/systemd/system/darkscope-panel.service
+
+# ---------- config ------------------------------------------------------------
 
 if [[ -f /etc/darknode-export.env ]]; then
-  say "/etc/darknode-export.env already exists — leaving it untouched"
+  say "/etc/darknode-export.env exists — leaving it alone"
 else
-  say "creating /etc/darknode-export.env (mode 600) — YOU must edit it"
-  sudo install -m 600 "$HERE/darknode-export.env.example" /etc/darknode-export.env
+  say "writing /etc/darknode-export.env from the example"
+  sudo install -m 600 "$HERE/collector/darknode-export.env.example" /etc/darknode-export.env
 fi
 
 sudo systemctl daemon-reload
 
-cat <<'NEXT'
+# ---------- start it ----------------------------------------------------------
 
-[install] done. Finish setup:
+say "starting the recorder and the panel"
+sudo systemctl enable --now dnet-record.service
+sudo systemctl enable --now darknode-export.timer
+sudo systemctl enable --now darkscope-panel.service
 
-  1. sudo nano /etc/darknode-export.env
-       NODE_INGEST_TOKEN=<same value set on your receiver>
-       INGEST_URL=https://your-site.example/api/node-ingest
+sleep 2
+ok=1
+for s in dnet-record darkscope-panel; do
+  state="$(systemctl is-active "$s" || true)"
+  printf '  %-18s %s\n' "$s" "$state"
+  [[ "$state" == "active" ]] || ok=0
+done
 
-  2. test with no POST (prints the JSON it would send):
-       DRY_RUN=1 /usr/local/bin/darknode-export.sh | jq .
+port="$(grep -oP '(?<=^PORT=)\d+' /etc/darkscope.env 2>/dev/null || echo 8080)"
 
-  3. one real POST now:
-       sudo systemctl start darknode-export.service
-       journalctl -u darknode-export.service -n 20 --no-pager
+cat <<EOF
 
-  4. enable the 60s timer:
-       sudo systemctl enable --now darknode-export.timer
-       systemctl list-timers | grep darknode
+────────────────────────────────────────────────────────────
+  open  http://localhost:${port}
+        (from another machine on your network, use this
+         machine's address — the panel serves no peer
+         addresses, only pseudonyms)
 
-  5. history digest (daily) — no extra config, it reuses the token and derives
-     its endpoint from INGEST_URL:
+  it fills up as your node talks. If the graph is empty,
+  the node is quiet or dnet-record cannot reach it:
+        journalctl -u dnet-record -n 30 --no-pager
+────────────────────────────────────────────────────────────
+EOF
 
-       /usr/local/bin/darknode-digest.py --dry-run     # check the numbers
-       sudo systemctl start darknode-digest.service    # one real publish
-       sudo systemctl enable --now darknode-digest.timer
+if [[ "$PUBLISH" == "1" ]]; then
+  cat <<'EOF'
+  PUBLISHING is installed but not started. It needs two values
+  in /etc/darknode-export.env:
 
-NEXT
+      NODE_INGEST_TOKEN=<the same value your site expects>
+      INGEST_URL=https://your-site.example/api/node-ingest
+
+  then:
+      sudo systemctl enable --now node-pulse.service
+      sudo systemctl start darknode-export.service
+      journalctl -u darknode-export -n 20 --no-pager
+
+  Read what it sends before you turn it on. It is counts and
+  pseudonyms, never addresses — but it is your node, so check.
+EOF
+fi
+
+[[ "$ok" == "1" ]] || die "something did not come up — see the states above"

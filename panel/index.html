@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>darkscope</title>
+<style>
+  :root {
+    --bg: #070a08;
+    --ink: #39ff14;
+    --text: #e8ffe3;
+    --faint: rgba(232,255,227,0.35);
+    --mono: ui-monospace, "DejaVu Sans Mono", SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-family: var(--mono); }
+  body { display: flex; flex-direction: column; }
+
+  header { display: flex; align-items: flex-start; justify-content: space-between;
+           gap: 24px; padding: 18px 24px; border-bottom: 1px solid rgba(57,255,20,0.16); flex-wrap: wrap; }
+  .title { display: flex; align-items: baseline; gap: 12px; }
+  .title h1 { margin: 0; font-size: 20px; font-weight: 600; color: var(--ink); letter-spacing: .02em; }
+  .title span { font-size: 13px; color: var(--faint); }
+
+  #card { display: flex; gap: 34px; }
+  #card .k { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
+  #card .v { font-size: 22px; line-height: 1.2; }
+  #card .s { font-size: 11px; color: var(--faint); }
+
+  main { flex: 1; min-height: 0; position: relative; }
+  #net { width: 100%; height: 100%; display: block; }
+
+  .legend { display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+            padding: 12px 24px; border-top: 1px solid rgba(57,255,20,0.16); font-size: 13px; color: var(--faint); }
+  .legend .sw { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 7px; vertical-align: middle; }
+  .legend b { color: var(--text); font-weight: 600; margin-right: 14px; }
+  .legend .tot { margin-left: auto; }
+
+  .note { position: absolute; left: 24px; bottom: 20px; font-size: 12px; color: rgba(232,255,227,0.28); line-height: 1.6; }
+  .note b { color: var(--ink); font-weight: 600; }
+  .note i { color: #f5c542; font-style: normal; }
+
+  @media (max-width: 720px) {
+    #card { gap: 20px; }
+    #card .v { font-size: 18px; }
+    .note { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="title">
+    <h1>darkscope</h1>
+    <span>your node, from its own debug feed</span>
+  </div>
+  <div id="card"><div class="k">connecting…</div></div>
+</header>
+
+<main>
+  <canvas id="net"></canvas>
+  <div class="note">
+    events and their times <b>real</b> · how long a dot takes to cross <i>drawn</i> ·
+    the feed plays <b>2 s</b> behind<br>
+    peers are pseudonyms — this page never receives an address
+  </div>
+</main>
+
+<div class="legend" id="mix">waiting for traffic…</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

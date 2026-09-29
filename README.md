@@ -1,137 +1,120 @@
-# darknode-exporter
+# darkscope
 
-Push-only telemetry for a [DarkFi](https://dark.fi) node on a Raspberry Pi.
-
-A small collector runs on the Pi, reads the miner and node **locally**, assembles
-one redacted JSON snapshot, and **POSTs it out** to an HTTP endpoint every 60s.
-Nothing on the internet ever connects *to* the Pi: `xmrig` stays bound to
-localhost and `darkfid`'s RPC never leaves the box — the exporter only reads them
-locally and pushes a summary outward.
-
-```
-Pi ── reads localhost ──► xmrig /2/summary · systemctl memory · vcgencmd · journald
-   ── assembles + redacts ──► one JSON
-   ── POST (Bearer token) ──► https://<your-site>/api/node-ingest   (outbound only)
-```
-
-It pairs with a small web receiver (an HTTP route + a key-value store) that keeps
-the last snapshot and renders it. This repo is only the Pi side; the receiver is
-your own.
-
-## Requirements
-
-- `curl` and `jq` (installed automatically if missing)
-- `vcgencmd` for SoC temperature (present on Raspberry Pi OS; skipped elsewhere)
-- an xmrig HTTP API in **restricted** (read-only) mode — add
-  `--http-host 127.0.0.1 --http-port 18088` to xmrig's `ExecStart`. No access
-  token: restricted mode is read-only and bound to localhost.
-
-## Install
+**Watch your own DarkFi node.** What it is talking to, what it is saying, and what it costs
+the machine it runs on — drawn from the node's own debug feed, on the machine itself.
 
 ```bash
-git clone https://github.com/reymom/darknode-exporter.git
-cd darknode-exporter
+git clone https://github.com/reymom/darkscope && cd darkscope && ./install.sh
+# then open http://localhost:8080
+```
+
+That is the whole thing. No account, no dashboard service, no npm, no build step. A shell
+script, two Python files that import nothing you do not already have, and one HTML page.
+
+![the panel](docs/panel.png)
+
+---
+
+## Why this exists
+
+A node on a Raspberry Pi told me things I could not have read anywhere: that its memory was
+tracking whatever ceiling I gave it, that a €6.64 server dies in the same four hundred blocks
+every time, and that one transaction of mine announced which machine it came from. None of
+that was visible until I could see the node.
+
+**The failure modes that only appear on small hardware have very few people looking at them**,
+because the people building these systems have machines with room. Every operator who can see
+their own node is another pair of eyes. This is the seeing part, and it is why it installs in
+one command on a board that costs less than a phone.
+
+## What you get
+
+**The panel** — your node in the middle, the peers it is talking to around it, and every
+message as it happens. Height, memory against its limit, peer count, uptime. What share of
+the traffic is peer discovery rather than anything interesting (it is most of it).
+
+**The collector** — writes to disk on your machine, once a minute for the machine state and
+continuously for the P2P feed. It is the history the panel reads, and it is yours: plain
+JSONL, one file a day, gzipped after a day, expired after `HISTORY_MAX_DAYS`.
+
+## Three honest things about the picture
+
+1. **The events and their times are real**, to the millisecond, straight from `darkfid`'s
+   own `dnet` feed. Nothing is simulated and nothing is inferred.
+2. **How long a dot takes to cross the screen is not.** That comes from how long the line is.
+   It is animation, and it is the only thing on the page that is.
+3. **The feed plays two seconds behind.** Events arrive in batches, and playing them the
+   moment they land gives you clumps instead of motion.
+
+## It never handles a peer address
+
+Addresses are mapped to `p1`, `p2`, … inside the server, before anything is serialised. The
+browser cannot learn who your peers are, and neither can anyone you show the page to. The map
+lives in `panel-ids.json` next to your logs so the names survive a restart.
+
+That is not decoration. **A panel like this is a deanonymization surface** and getting it
+wrong is easy — see the open issue about it, which is about this repository and not about
+anyone else's code.
+
+## Layout
+
+```
+collector/    what runs next to the node
+  dnet-record.sh       subscribes to darkfid's dnet feed → dnet-YYYY-MM-DD.jsonl
+  darknode-export.sh   one machine snapshot a minute → snapshots-YYYY-MM-DD.jsonl
+  darkfid-blocks.sh    one line per applied block: height, calls, gas, contracts
+  darknode-digest.py   daily rollup
+  node-pulse.py        OPTIONAL — pushes a summary to a site you run
+  darkfid-memguard.*   OPTIONAL — a watchdog for when you are still finding your limits
+panel/        what you look at
+  serve.py      stdlib HTTP server: reads the files above, serves pseudonyms
+  index.html
+  app.js        canvas, no dependencies
+install.sh
+```
+
+## Running it
+
+**Locally, which is the default.** Nothing leaves the machine.
+
+```bash
 ./install.sh
 ```
 
-`install.sh` copies the collector to `/usr/local/bin`, installs the systemd
-service + timer, and seeds `/etc/darknode-export.env` (mode 600). It starts
-nothing until you fill that file in.
-
-## Configure
-
-Edit `/etc/darknode-export.env`:
-
-```ini
-# shared secret — the same value must be set on the receiver
-NODE_INGEST_TOKEN=<openssl rand -hex 32>
-INGEST_URL=https://your-site.example/api/node-ingest
-XMRIG_API=http://127.0.0.1:18088
-# optional overrides:
-# DARKFID_UNIT=darkfid.service
-# XMRIG_UNIT=xmrig.service
-# WASM_TAIL_N=12
-```
-
-## Run
+**Publishing to a site you run**, which is what the author does, and which adds the only
+component that sends anything anywhere:
 
 ```bash
-# dry run — prints the exact JSON it would send, POSTs nothing:
-DRY_RUN=1 /usr/local/bin/darknode-export.sh | jq .
-
-# one POST now:
-sudo systemctl start darknode-export.service
-journalctl -u darknode-export.service -n 20 --no-pager
-
-# enable the 60s timer:
-sudo systemctl enable --now darknode-export.timer
+./install.sh --publish
+# then set NODE_INGEST_TOKEN and INGEST_URL in /etc/darknode-export.env
 ```
 
-The optional WASM-log tail needs journal access. If you run the service as a
-dedicated non-root user, add it to the journal group:
-`sudo usermod -aG systemd-journal <user>`.
+**Without installing anything**, pointed at logs you already have:
 
-## What it sends
+```bash
+DNET_DIR=/var/log/darknode PORT=8080 ./panel/serve.py
+```
 
-See [`sample-snapshot.json`](sample-snapshot.json) for the full shape: miner
-hashrate (per-window + per-thread), hugepages, algo, uptime; the cgroup memory
-budget for `darkfid` and `xmrig` (current / high / max / swap) plus host memory;
-SoC temperature and throttle state; sync height/tip; and an optional tail of
-`[WASM]` log lines.
+## Configuration
 
-## Local history
+Everything is environment variables, in `/etc/darknode-export.env` for the collector and
+`/etc/darkscope.env` for the panel.
 
-The exporter also appends every snapshot to `/var/log/darknode/snapshots-YYYY-MM-DD.jsonl`
-(one line per minute, gzipped after a day, expired after `HISTORY_MAX_DAYS`,
-default 120). This happens *before* the POST, so history accumulates even when
-the site is unreachable — outages are data too. Disable with `HISTORY_DIR=""`.
-
-`dnet-record.sh` (+ `dnet-record.service`) is a companion long-running service
-that subscribes to darkfid's own **dnet** P2P instrumentation stream over the
-localhost management RPC and appends every event (per-channel send/recv,
-peer-discovery states, slot lifecycle) to `/var/log/darknode/dnet-YYYY-MM-DD.jsonl`.
-Raw dnet events carry peer addresses, so **they never leave the Pi** — only
-aggregates may be published.
-
-`darkfid-blocks.sh` (+ `darkfid-blocks.service`) follows darkfid's journal and
-appends one line per applied block to `/var/log/darknode/blocks.tsv`: when it was
-applied, its height, how many contract calls it carried and how much gas they
-burned. The journal itself is volatile here (it lives in RAM, so a reboot erases
-it), and this is what lets the digest show the chain's own activity over its
-whole length rather than over the recording window.
-
-Height / tip / peers are now read from darkfid's localhost JSON-RPC
-(`blockchain.last_confirmed_block`, `blockchain.best_fork_next_block_height`)
-and an `ss` count of established P2P sessions, with the journal scrape kept as
-fallback.
-
-## What the digest adds (2026-09-24)
-
-The digest is aggregate-only and additive: fields get added, never renamed, so an
-older receiver keeps working against a newer digest. The latest additions, all
-optional:
-
-| Field | What it is |
+| | |
 |---|---|
-| `series.hashrate`, `series.difficulty` | the miner's hash rate and the network difficulty it is working against, per bucket |
-| `series.blocksPerHour` | block production, counted only across samples where the node was within 5 blocks of the tip **and** moving no faster than four times the chain's target. The lag test alone is not enough: while resyncing, darkfid reports its own chain, so height equals tip and a node replaying thousands of blocks looks caught up |
-| `retention` | anon now against the node's floor just after its last restart: what the process is holding and not using |
-| `chainActivity` | per-height totals over the whole chain: blocks seen, blocks carrying more than the miner's own reward, calls, gas, calls bucketed by height, `callsByKind` (named from the contracts' own log lines, so it only covers blocks applied since the logger learned to read them) and `perDay` (only blocks the node saw arrive, never a replay) |
-| `sources` | how often each published number was answered by darkfid's RPC rather than scraped from its journal, per field. The two are not the same claim, and until now nothing on the page said which one it was showing |
-| `overlay.sessions.histogram` | session lengths in log buckets; the median is 33 s and the longest is over a day, so a linear histogram says nothing |
-| `overlay.rtt.byCeiling` | round trips split by whether the node was against its memory ceiling at the time |
+| `DARKFID_UNIT` | the systemd unit your node runs as, so memory can be read from its cgroup |
+| `DARKFID_MGMT_RPC_PORT` | where `dnet` is, default `18346` |
+| `HISTORY_DIR` | where everything is written, default `/var/log/darknode` |
+| `HISTORY_MAX_DAYS` | how long to keep it |
+| `PORT`, `NODE_NAME` | the panel |
+| `INGEST_URL`, `NODE_INGEST_TOKEN` | only if you are publishing |
 
-Snapshots also carry `darkfidStartedAt`, so a restart is an exact observation rather than
-something inferred from a drop in memory, and a `sources` object naming where `height`,
-`tip`, `peers` and `difficulty` each came from on that sample.
+## Requirements
 
-## Privacy
+A Linux machine running `darkfid` under systemd, with `curl`, `jq` and `python3`. It was
+built on a Raspberry Pi 5 and a 4 GB x86 VPS, and it assumes nothing else.
 
-- The wallet address is never included in the snapshot.
-- The collector strips terminal color codes and redacts `dark1…` / long base58 /
-  `0x…` tokens from the WASM log tail.
-- Peer **count** only — never peer IPs (DarkFi is an anonymity network).
+## Licence
 
-## License
-
-MIT — see [LICENSE](LICENSE).
+See [LICENSE](LICENSE). Use it, change it, and if you find something on your own hardware
+that nobody has written down, say so somewhere.
