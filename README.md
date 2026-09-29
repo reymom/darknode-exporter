@@ -70,15 +70,32 @@ panel/        what you look at
   serve.py      stdlib HTTP server: reads the files above, serves pseudonyms
   index.html
   app.js        canvas, no dependencies
+bench/        does your node fit on this box?
+  bench.sh      one arm: same database, one environment, what it cost
+  snapshot.sh   the restore point every arm starts from
+  sampler.sh    memory every 5 s
+  results/      the series behind the measurements, and the raw run log
 install.sh
 ```
+
+## Also here: the bench
+
+[`bench/`](bench/) is the rig that found the memory behaviour in the first place — restore the
+same chain database, change one environment variable, and see whether the node survives the
+four hundred blocks that carry the transactions. On a 4 GB server the default configuration
+died four syncs out of seven. The raw series are in `bench/results/`.
 
 ## Running it
 
 **Locally, which is the default.** Nothing leaves the machine.
 
 ```bash
-./install.sh
+./bench/        does your node fit on this box?
+  bench.sh      one arm: same database, one environment, what it cost
+  snapshot.sh   the restore point every arm starts from
+  sampler.sh    memory every 5 s
+  results/      the series behind the measurements, and the raw run log
+install.sh
 ```
 
 **Publishing to a site you run**, which is what the author does, and which adds the only

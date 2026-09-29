@@ -1,0 +1,13 @@
+arena2	1790334446	1790335367	921	3159	3043	PASO en altura 65010 (MALLOC_ARENA_MAX=2)
+glibc-base	1790335391	1790336052	661	3362	0	MUERTO en altura 64726 ()
+arena1	1790336074	1790337095	1021	2595	2484	PASO en altura 65016 (MALLOC_ARENA_MAX=1)
+arena1-b	1790337220	1790338201	981	2555	2478	PASO en altura 65044 (MALLOC_ARENA_MAX=1)
+jemalloc-hoy	1790338227	1790339008	781	2381	872	PASO en altura 65071 (LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2)	cpu=727s
+glibc-base-b	1790339031	1790339752	721	3235	0	MUERTO en altura 64735 ()	cpu=598s
+arena1-c	1790339774	1790340776	1002	2557	2481	PASO en altura 65044 (MALLOC_ARENA_MAX=1)	cpu=981s
+wasm-off	1790343797	1790343817	20	0	0	MUERTO en altura ? (LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2 DARKFID_MODCACHE=0)	cpu=0s
+wasm-on	1790343839	1790343859	20	0	0	MUERTO en altura ? (LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2)	cpu=0s
+wasm-cranelift	1790343882	1790343902	20	0	0	MUERTO en altura ? (LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2 DARKFID_CRANELIFT=1)	cpu=2s
+wasm-off	1790344328	1790345149	821	2418	913	PASO en altura 65027 (LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2 DARKFID_MODCACHE=0)	cpu=716s
+wasm-on	1790345174	1790345835	661	2463	957	PASO en altura 65070 (LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2)	cpu=609s
+wasm-cranelift	1790345857	1790346599	742	2819	950	PASO en altura 65015 (LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2 DARKFID_CRANELIFT=1)	cpu=606s

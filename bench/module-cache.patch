@@ -1,0 +1,140 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 12e435b4b..4d057cd5b 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -113,6 +113,7 @@ sha2 = {version = "0.11.0", optional = true}
+ darkfi-sdk = {path = "src/sdk", optional = true}
+ wasmer = {version = "6.1.0", features = ["singlepass"], optional = true}
+ wasmer-compiler-singlepass = {version = "6.1.0", optional = true}
++wasmer-compiler-cranelift = {version = "6.1.0", optional = true}
+ wasmer-middlewares = {version = "6.1.0", optional = true}
+ 
+ # Blockchain store
+@@ -290,6 +291,7 @@ util = [
+ wasm-runtime = [
+     "wasmer",
+     "wasmer-compiler-singlepass",
++    "wasmer-compiler-cranelift",
+     "wasmer-middlewares",
+ 
+     "darkfi-sdk/wasm",
+diff --git a/src/runtime/vm_runtime.rs b/src/runtime/vm_runtime.rs
+index 4a8592360..be96f58fb 100644
+--- a/src/runtime/vm_runtime.rs
++++ b/src/runtime/vm_runtime.rs
+@@ -19,7 +19,7 @@
+ use std::{
+     cell::{Cell, RefCell},
+     collections::BTreeMap,
+-    sync::Arc,
++    sync::{Arc, OnceLock},
+ };
+ 
+ use darkfi_sdk::{
+@@ -37,6 +37,7 @@ use wasmer::{
+     FunctionEnv, Instance, Memory, MemoryType, MemoryView, Module, Pages, Store, Value,
+     WASM_PAGE_SIZE,
+ };
++use wasmer_compiler_cranelift::Cranelift;
+ use wasmer_compiler_singlepass::Singlepass;
+ use wasmer_middlewares::{
+     metering::{get_remaining_points, set_remaining_points, MeteringPoints},
+@@ -168,6 +169,66 @@ pub struct Runtime {
+     pub ctx: FunctionEnv<Env>,
+ }
+ 
++/// EXPERIMENT (25-S), not upstream: one engine for the process, and the compiled
++/// modules kept.
++///
++/// The metering middleware instruments the module at compile time and each new
++/// instance gets its own copy of the remaining-points global, initialised to
++/// `GAS_LIMIT` — so a cached module still meters every call from zero. Gas per
++/// block is the check: it has to come out identical to what the logger
++/// recorded, or the cache changed something it must not.
++/// Read once: `std::env::var` allocates, and this sits in the per-call path of
++/// an experiment about allocation.
++static CACHE_ON: OnceLock<bool> = OnceLock::new();
++static CRANELIFT: OnceLock<bool> = OnceLock::new();
++
++/// One (engine, module) per distinct contract, keyed by the contract's wasm
++/// rather than by its id — contracts get redeployed, 31 times in this chain's
++/// history, and the bytes are the identity.
++///
++/// The pair, not the module alone: `Metering` keeps per-module state, so one
++/// middleware cannot compile two modules and therefore one engine cannot serve
++/// two contracts.
++static MODULE_CACHE: OnceLock<Mutex<BTreeMap<Vec<u8>, (wasmer::Engine, Module)>>> =
++    OnceLock::new();
++
++fn new_engine() -> wasmer::Engine {
++    let cost_function = |_operator: &Operator| -> u64 { 1 };
++    let metering = Arc::new(Metering::new(GAS_LIMIT, cost_function));
++    if *CRANELIFT.get_or_init(|| std::env::var("DARKFID_CRANELIFT").is_ok()) {
++        // Slower to compile, faster to run — the right trade only once the
++        // compiled module is kept.
++        let mut compiler_config = Cranelift::new();
++        compiler_config.push_middleware(metering);
++        compiler_config.into()
++    } else {
++        let mut compiler_config = Singlepass::new();
++        compiler_config.push_middleware(metering);
++        compiler_config.into()
++    }
++}
++
++fn engine_and_module(wasm_bytes: &[u8]) -> Result<(wasmer::Engine, Module)> {
++    let compile = || -> Result<(wasmer::Engine, Module)> {
++        let engine = new_engine();
++        let store = Store::new(engine.clone());
++        let module = Module::new(&store, wasm_bytes)?;
++        Ok((engine, module))
++    };
++
++    if !*CACHE_ON.get_or_init(|| std::env::var("DARKFID_MODCACHE").as_deref() != Ok("0")) {
++        return compile();
++    }
++
++    let cache = MODULE_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
++    if let Some(pair) = cache.lock().get(wasm_bytes) {
++        return Ok(pair.clone());
++    }
++    let pair = compile()?;
++    cache.lock().insert(wasm_bytes.to_vec(), pair.clone());
++    Ok(pair)
++}
++
+ impl Runtime {
+     /// Create a new wasm runtime instance that contains the given wasm module.
+     #[allow(clippy::too_many_arguments)]
+@@ -187,17 +248,10 @@ impl Runtime {
+         // that it received as its first argument. For now, every wasm opcode
+         // has a cost of `1`.
+         // https://docs.rs/wasmparser/latest/wasmparser/enum.Operator.html
+-        let cost_function = |_operator: &Operator| -> u64 { 1 };
+-
+-        // `Metering` needs to be configured with a limit and a cost function.
+-        // For each `Operator`, the metering middleware will call the cost
+-        // function and subtract the cost from the remaining points.
+-        let metering = Arc::new(Metering::new(GAS_LIMIT, cost_function));
+-
+-        // Define the compiler and middleware, engine, and store
+-        let mut compiler_config = Singlepass::new();
+-        compiler_config.push_middleware(metering);
+-        let mut store = Store::new(compiler_config);
++        // EXPERIMENT: the engine and the compiled module are built once per
++        // contract and kept; only the store and the instance are per call.
++        let (engine, module) = engine_and_module(wasm_bytes)?;
++        let mut store = Store::new(engine);
+ 
+         // Create a larger Memory for the instance
+         let memory_type = MemoryType::new(
+@@ -207,8 +261,7 @@ impl Runtime {
+         );
+         let memory = Memory::new(&mut store, memory_type)?;
+ 
+-        debug!(target: "runtime::vm_runtime", "Compiling module");
+-        let module = Module::new(&store, wasm_bytes)?;
++        debug!(target: "runtime::vm_runtime", "Module ready");
+ 
+         // Initialize data
+         let db_handles = RefCell::new(vec![]);
