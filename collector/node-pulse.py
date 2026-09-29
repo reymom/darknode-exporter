@@ -38,13 +38,25 @@ WELL_KNOWN = {
     "node1.testnet.dark.fi": "node-1",
 }
 
-# The two machines know each other by address; the renderer knows them by node id.
-# Mapping them here is what draws the direct channel between the two columns
-# instead of an anonymous peer on each side.
-PEERS_ARE_NODES = {
-    "REDACTED_ADDRESS": "darkfi-obs",
-    os.environ.get("OTHER_NODE_ADDR", "__none__"): "darknode",
-}
+# Peers that are themselves machines you run get that machine's name instead of a
+# pseudonym, which is what draws the direct link between two of your own nodes
+# rather than an anonymous peer on each side of the graph.
+#
+# ADDRESSES BELONG IN YOUR CONFIG, NEVER IN THIS FILE. Set PEER_NODE_MAP to a
+# JSON object in the environment file:
+#
+#   PEER_NODE_MAP={"203.0.113.7":"my-vps","pi.example":"my-pi"}
+#
+# Nothing here is published: the map turns an address into a name locally, and
+# only the name is ever sent.
+PEERS_ARE_NODES = {}
+try:
+    PEERS_ARE_NODES = dict(json.loads(os.environ.get("PEER_NODE_MAP", "{}")))
+except Exception:
+    print("[pulse] PEER_NODE_MAP is not valid JSON — ignoring it", file=sys.stderr)
+_other_addr = os.environ.get("OTHER_NODE_ADDR", "").strip()
+if _other_addr:
+    PEERS_ARE_NODES[_other_addr] = os.environ.get("OTHER_NODE_NAME", "other-node")
 
 def load_ids():
     try:
