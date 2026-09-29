@@ -1,1 +1,5 @@
+panel/node_modules/
+panel/.vite/
+server/machines.json
 __pycache__/
+*.pyc
