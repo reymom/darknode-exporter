@@ -1,16 +1,16 @@
 # darkscope
 
-**Watch your own DarkFi node.** What it is talking to, what it is saying, and what it costs
-the machine it runs on — drawn from the node's own debug feed, on the machine itself.
+Watch every DarkFi node you run on one live graph, drawn from what the nodes already
+report about themselves, on hardware you own.
 
 ```bash
 git clone https://github.com/reymom/darkscope && cd darkscope && ./install.sh
 # then open http://localhost:8080
 ```
 
-That is the whole thing. No account and no dashboard service — it runs on your machine and
-the data stays there. The panel is committed built, so cloning and running needs no npm; you
-only need it if you want to change the graph.
+There is no account and no dashboard service, it runs on your machine and the data stays
+there, and the panel is committed already built so cloning and running needs no npm. You
+only need npm if you want to change the graph.
 
 ![the panel](docs/panel.png)
 
@@ -18,44 +18,47 @@ only need it if you want to change the graph.
 
 ## Why this exists
 
-A node on a Raspberry Pi told me things I could not have read anywhere: that its memory was
-tracking whatever ceiling I gave it, that a €6.64 server dies in the same four hundred blocks
-every time, and that one transaction of mine announced which machine it came from. None of
-that was visible until I could see the node.
+I ran a node on a Raspberry Pi for three months and it told me things that were not written
+down anywhere, like that its memory was tracking whatever ceiling I gave it rather than what
+it needed, and that a four gigabyte server dies in the same four hundred blocks every time,
+and that one transaction of mine announced which machine it had come from. I could not see
+any of that until I could see the node.
 
-**The failure modes that only appear on small hardware have very few people looking at them**,
-because the people building these systems have machines with room. Every operator who can see
-their own node is another pair of eyes. This is the seeing part, and it is why it installs in
-one command on a board that costs less than a phone.
+The failure modes that only appear when a machine is short of room have very few people
+looking at them, because the people building these systems are working on machines that have
+room, which is reasonable. So every operator who can see their own node is another pair of
+eyes, and this is the seeing part.
 
 ## What you get
 
-**The panel** — your node in the middle, the peers it is talking to around it, and every
-message as it happens. Height, memory against its limit, peer count, uptime. What share of
-the traffic is peer discovery rather than anything interesting (it is most of it).
+The panel puts your machines on one graph with the peers they are talking to around them,
+and draws every message as it happens. For each machine it shows height, memory against
+whatever limit it has, peer count and uptime, and underneath it shows what share of the
+traffic is peers asking each other who exists, which is most of it.
 
-**The collector** — writes to disk on your machine, once a minute for the machine state and
-continuously for the P2P feed. It is the history the panel reads, and it is yours: plain
-JSONL, one file a day, gzipped after a day, expired after `HISTORY_MAX_DAYS`.
+The collector writes to disk on your own machine, once a minute for the machine state and
+continuously for the P2P feed. That history is what the panel reads and it is yours: plain
+JSONL, one file a day, gzipped after a day, and expired after `HISTORY_MAX_DAYS`.
 
-## Three honest things about the picture
+## What is real in the picture and what is not
 
-1. **The events and their times are real**, to the millisecond, straight from `darkfid`'s
-   own `dnet` feed. Nothing is simulated and nothing is inferred.
-2. **How long a dot takes to cross the screen is not.** That comes from how long the line is.
-   It is animation, and it is the only thing on the page that is.
-3. **The feed plays two seconds behind.** Events arrive in batches, and playing them the
-   moment they land gives you clumps instead of motion.
+The events and their times are real, to the millisecond, straight from `darkfid`'s own `dnet`
+feed, so nothing on the graph is simulated or inferred. How long a dot takes to cross the
+screen is not real, it comes from how long that line is, and it is the only thing on the page
+that is drawn rather than measured. And the whole feed plays two seconds behind, because
+events arrive in batches and playing them the moment they land gives you clumps instead of
+motion.
 
 ## It never handles a peer address
 
-Addresses are mapped to `p1`, `p2`, … inside the server, before anything is serialised. The
-browser cannot learn who your peers are, and neither can anyone you show the page to. The map
-lives in `panel-ids.json` next to your logs so the names survive a restart.
+Addresses are mapped to `p1`, `p2` and so on inside the server, before anything is
+serialised, so the browser cannot learn who your peers are and neither can anyone you show
+the page to. The map lives in `panel-ids.json` next to your logs so the names survive a
+restart.
 
-That is not decoration. **A panel like this is a deanonymization surface** and getting it
-wrong is easy — see the open issue about it, which is about this repository and not about
-anyone else's code.
+That matters more than it sounds, because a panel like this is a deanonymization surface and
+getting it wrong is easy. There is an open issue about the parts of it I have not fixed yet,
+and it is about this repository rather than about anyone else's code.
 
 ## Layout
 
@@ -92,10 +95,10 @@ install.sh
 
 ## Also here: the bench
 
-[`bench/`](bench/) is the rig that found the memory behaviour in the first place — restore the
-same chain database, change one environment variable, and see whether the node survives the
-four hundred blocks that carry the transactions. On a 4 GB server the default configuration
-died four syncs out of seven. The raw series are in `bench/results/`.
+[`bench/`](bench/) is the rig that found the memory behaviour in the first place. It restores
+the same chain database, changes one environment variable, and sees whether the node survives
+the four hundred blocks that carry the transactions. On a four gigabyte server the default
+configuration died four syncs out of seven. The raw series are in `bench/results/`.
 
 ## Running it
 
@@ -110,8 +113,8 @@ died four syncs out of seven. The raw series are in `bench/results/`.
 install.sh
 ```
 
-**Publishing to a site you run**, which is what the author does, and which adds the only
-component that sends anything anywhere:
+**Publishing to a server you run**, which is what I do, and which adds the only component
+that sends anything anywhere:
 
 ```bash
 ./install.sh --publish
@@ -159,5 +162,5 @@ a Raspberry Pi 5 and a 4 GB x86 VPS, and it assumes nothing else.
 
 ## Licence
 
-See [LICENSE](LICENSE). Use it, change it, and if you find something on your own hardware
-that nobody has written down, say so somewhere.
+See [LICENSE](LICENSE). Use it and change it, and if you find something on your own hardware
+that nobody has written down, it is worth saying so somewhere.
