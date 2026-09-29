@@ -8,8 +8,9 @@ git clone https://github.com/reymom/darkscope && cd darkscope && ./install.sh
 # then open http://localhost:8080
 ```
 
-That is the whole thing. No account, no dashboard service, no npm, no build step. A shell
-script, two Python files that import nothing you do not already have, and one HTML page.
+That is the whole thing. No account and no dashboard service — it runs on your machine and
+the data stays there. The panel is committed built, so cloning and running needs no npm; you
+only need it if you want to change the graph.
 
 ![the panel](docs/panel.png)
 
@@ -58,18 +59,29 @@ anyone else's code.
 
 ## Layout
 
+Three parts that do not know about each other:
+
 ```
-collector/    what runs next to the node
+collector (on each node)  →  server (receives)  →  panel (a pure receiver)
+```
+
+The panel talks to no node and holds no address. It asks the server what machines exist and
+draws whatever it is given, which is why it works for one machine or for six.
+
+```
+collector/    what runs next to each node
   dnet-record.sh       subscribes to darkfid's dnet feed → dnet-YYYY-MM-DD.jsonl
   darknode-export.sh   one machine snapshot a minute → snapshots-YYYY-MM-DD.jsonl
   darkfid-blocks.sh    one line per applied block: height, calls, gas, contracts
   darknode-digest.py   daily rollup
-  node-pulse.py        OPTIONAL — pushes a summary to a site you run
+  node-pulse.py        pushes pseudonyms and counts to your server — never an address
   darkfid-memguard.*   OPTIONAL — a watchdog for when you are still finding your limits
-panel/        what you look at
-  serve.py      stdlib HTTP server: reads the files above, serves pseudonyms
-  index.html
-  app.js        canvas, no dependencies
+server/       receives from every machine, holds five minutes, serves the panel
+  server.py            stdlib only. Bearer token from collectors, read endpoints out
+  machines.example.json
+panel/        the graph
+  src/                 three.js + 3d-force-graph. The same one at reymom.xyz/darknode
+  dist/                committed, so cloning needs no npm
 bench/        does your node fit on this box?
   bench.sh      one arm: same database, one environment, what it cost
   snapshot.sh   the restore point every arm starts from
@@ -106,10 +118,20 @@ component that sends anything anywhere:
 # then set NODE_INGEST_TOKEN and INGEST_URL in /etc/darknode-export.env
 ```
 
-**Without installing anything**, pointed at logs you already have:
+**Your machines**, in `server/machines.json`. The order decides the colours, and a machine
+keeps its colour when you add another:
+
+```json
+[
+  {"id": "my-pi",  "label": "my-pi",  "desc": "Raspberry Pi 5 · 8 GB · ARM"},
+  {"id": "my-vps", "label": "my-vps", "desc": "rented server · 4 GB"}
+]
+```
+
+**Changing the graph** needs the toolchain, and only then:
 
 ```bash
-DNET_DIR=/var/log/darknode PORT=8080 ./panel/serve.py
+cd panel && npm install && npm run build
 ```
 
 ## Configuration
@@ -123,13 +145,17 @@ Everything is environment variables, in `/etc/darknode-export.env` for the colle
 | `DARKFID_MGMT_RPC_PORT` | where `dnet` is, default `18346` |
 | `HISTORY_DIR` | where everything is written, default `/var/log/darknode` |
 | `HISTORY_MAX_DAYS` | how long to keep it |
-| `PORT`, `NODE_NAME` | the panel |
+| `PORT` | the server |
+| `DARKSCOPE_TOKEN` | what collectors must present to push |
+| `DARKSCOPE_READ_TOKEN` | optional, if reading should not be open either |
+| `PEER_NODE_MAP` | JSON: which peer addresses are your own machines, so they are drawn as machines rather than as an anonymous peer on each side. The address never leaves the file |
 | `INGEST_URL`, `NODE_INGEST_TOKEN` | only if you are publishing |
 
 ## Requirements
 
-A Linux machine running `darkfid` under systemd, with `curl`, `jq` and `python3`. It was
-built on a Raspberry Pi 5 and a 4 GB x86 VPS, and it assumes nothing else.
+A Linux machine running `darkfid` under systemd, with `curl`, `jq` and `python3`. The
+collector is standard library only. Node is needed only to rebuild the panel. It was built on
+a Raspberry Pi 5 and a 4 GB x86 VPS, and it assumes nothing else.
 
 ## Licence
 
