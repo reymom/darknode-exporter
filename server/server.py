@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import re
 import threading
 import time
 from collections import deque
@@ -39,6 +40,13 @@ READ_TOKEN = os.environ.get("DARKSCOPE_READ_TOKEN", "")
 KEEP_MS = int(os.environ.get("KEEP_MS", str(5 * 60 * 1000)))
 MAX_BATCHES = 4000
 
+# A pseudonym, and nothing that could be an address. The collector already maps
+# addresses to p1, p2, … before sending, but "no address leaves the machine"
+# should not rest on one function in another process: anything that does not
+# look like a pseudonym is dropped here too.
+PEER_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,30}$")
+CMD_RE = re.compile(r"^[a-z0-9_]{1,32}$")
+
 _lock = threading.Lock()
 _batches: deque = deque(maxlen=MAX_BATCHES)  # (seq, batch)
 _seq = 0
@@ -49,7 +57,7 @@ def machines() -> list[dict]:
     raw = os.environ.get("MACHINES")
     if not raw:
         try:
-            with open(os.path.join(HERE, "machines.json")) as fh:
+            with open(os.environ.get("MACHINES_FILE", os.path.join(HERE, "machines.json"))) as fh:
                 raw = fh.read()
         except OSError:
             return []
@@ -118,7 +126,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"error": f"unknown machine {node!r}"}, 400)
             evs = [
                 e for e in (b.get("events") or [])
-                if isinstance(e, dict) and e.get("cmd") and e.get("peer") and e.get("dir") in ("send", "recv")
+                if isinstance(e, dict)
+                and isinstance(e.get("peer"), str) and PEER_RE.match(e["peer"])
+                and isinstance(e.get("cmd"), str) and CMD_RE.match(e["cmd"])
+                and e.get("dir") in ("send", "recv")
+                and isinstance(e.get("t"), int)
             ]
             if evs:
                 global _seq
@@ -171,14 +183,16 @@ class Handler(BaseHTTPRequestHandler):
                         if not s:
                             continue
                         mem = (s.get("memory") or {}).get("darkfid") or s.get("memory") or {}
+                        num = lambda v: v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
                         nodes.append({
                             "node": m["id"],
-                            "height": s.get("height"),
-                            "tip": s.get("tip"),
-                            "peers": s.get("peers"),
-                            "uptime": s.get("uptime"),
-                            "memory": {"current": mem.get("current"), "high": mem.get("high"), "max": mem.get("max")},
-                            "receivedAt": s.get("receivedAt"),
+                            "height": num(s.get("height")),
+                            "tip": num(s.get("tip")),
+                            "peers": num(s.get("peers")),
+                            "uptime": num(s.get("uptime")),
+                            "memory": {"current": num(mem.get("current")), "high": num(mem.get("high")),
+                                       "max": num(mem.get("max"))},
+                            "receivedAt": num(s.get("receivedAt")),
                         })
                 return self._json({"now": now, "nodes": nodes})
 
@@ -186,8 +200,9 @@ class Handler(BaseHTTPRequestHandler):
 
         # the built panel
         rel = "index.html" if u.path in ("/", "") else u.path.lstrip("/")
-        path = os.path.normpath(os.path.join(DIST, rel))
-        if not path.startswith(os.path.normpath(DIST)):
+        root = os.path.realpath(DIST)
+        path = os.path.realpath(os.path.join(root, rel))
+        if path != root and not path.startswith(root + os.sep):
             return self._send(403, b"no", "text/plain")
         if not os.path.isfile(path):
             path = os.path.join(DIST, "index.html")

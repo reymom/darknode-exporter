@@ -529,8 +529,8 @@ if [[ -n "$HISTORY_DIR" ]]; then
     # no point walking the dir each minute.
     rotate_marker="$HISTORY_DIR/.last-rotate"
     if [[ ! -e "$rotate_marker" ]] || [[ -n "$(find "$rotate_marker" -mmin +60 2>/dev/null)" ]]; then
-      find "$HISTORY_DIR" \( -name 'snapshots-*.jsonl' -o -name 'dnet-*.jsonl' \) -mtime +0 -exec gzip -q {} \; 2>/dev/null || true
-      find "$HISTORY_DIR" \( -name 'snapshots-*.jsonl.gz' -o -name 'dnet-*.jsonl.gz' \) -mtime +"$HISTORY_MAX_DAYS" -delete 2>/dev/null || true
+      find "$HISTORY_DIR" \( -name 'snapshots-*.jsonl' -o -name 'dnet-*.jsonl' -o -name 'pulse-*.jsonl' \) -mtime +0 -exec gzip -q {} \; 2>/dev/null || true
+      find "$HISTORY_DIR" \( -name 'snapshots-*.jsonl.gz' -o -name 'dnet-*.jsonl.gz' -o -name 'pulse-*.jsonl.gz' \) -mtime +"$HISTORY_MAX_DAYS" -delete 2>/dev/null || true
       touch "$rotate_marker"
     fi
   else

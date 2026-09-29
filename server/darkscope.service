@@ -1,0 +1,23 @@
+[Unit]
+Description=darkscope — receives from your collectors and serves the panel
+Documentation=https://github.com/reymom/darkscope
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/darkscope.env
+Environment=PORT=8080
+Environment=DIST=/usr/local/share/darkscope/dist
+Environment=MACHINES_FILE=/etc/darkscope/machines.json
+ExecStart=/usr/bin/python3 /usr/local/share/darkscope/server.py
+Restart=always
+RestartSec=5
+Nice=10
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+MemoryMax=192M
+
+[Install]
+WantedBy=multi-user.target

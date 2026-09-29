@@ -23,6 +23,17 @@ type Live = { now: number; nodes: LiveNode[] };
 
 const $ = (id: string) => document.getElementById(id)!;
 
+/**
+ * Everything drawn here arrives from a collector, and a collector is a machine
+ * somebody else runs. The server types the numeric fields, but the page should
+ * not depend on that: a peer count that is an <img onerror=...> ran in a browser
+ * during the audit on 29-09-2026, so nothing reaches innerHTML unescaped.
+ */
+const esc = (v: unknown): string =>
+  String(v ?? "").replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!,
+  );
+
 type Machine = MachineSpec & { desc?: string };
 
 async function config(): Promise<Machine[]> {
@@ -47,15 +58,15 @@ function cards(live: Live, machines: Machine[]) {
       const colour = machineColor(m.id, machines.map((x) => x.id));
       return `<div class="card">
         <div class="hd"><span class="dot" style="background:${colour}"></span>
-          <b>${m.label}</b>${m.desc ? `<span class="desc">${m.desc}</span>` : ""}
-          <span class="age">${age === null ? "no data" : age + "s old"}</span></div>
+          <b>${esc(m.label)}</b>${m.desc ? `<span class="desc">${esc(m.desc)}</span>` : ""}
+          <span class="age">${age === null ? "no data" : esc(age) + "s old"}</span></div>
         <dl>
-          <div><dt>height</dt><dd>${n?.height?.toLocaleString() ?? "—"}</dd>
-               <dfn>${n && n.height === n.tip ? "at tip" : n?.tip ? "tip " + n.tip : ""}</dfn></div>
-          <div><dt>memory held</dt><dd>${G(n?.memory?.current)}</dd>
-               <dfn>${n?.memory?.high ? "of " + G(n.memory.high) : "no limit"}</dfn></div>
-          <div><dt>peers</dt><dd>${n?.peers ?? "—"}</dd><dfn></dfn></div>
-          <div><dt>uptime</dt><dd>${up(n?.uptime)}</dd><dfn></dfn></div>
+          <div><dt>height</dt><dd>${esc(n?.height?.toLocaleString() ?? "—")}</dd>
+               <dfn>${n && n.height === n.tip ? "at tip" : n?.tip ? "tip " + esc(n.tip) : ""}</dfn></div>
+          <div><dt>memory held</dt><dd>${esc(G(n?.memory?.current))}</dd>
+               <dfn>${n?.memory?.high ? "of " + esc(G(n.memory.high)) : "no limit"}</dfn></div>
+          <div><dt>peers</dt><dd>${esc(n?.peers ?? "—")}</dd><dfn></dfn></div>
+          <div><dt>uptime</dt><dd>${esc(up(n?.uptime))}</dd><dfn></dfn></div>
         </dl></div>`;
     })
     .join("");

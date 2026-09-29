@@ -37,8 +37,15 @@ whatever limit it has, peer count and uptime, and underneath it shows what share
 traffic is peers asking each other who exists, which is most of it.
 
 The collector writes to disk on your own machine, once a minute for the machine state and
-continuously for the P2P feed. That history is what the panel reads and it is yours: plain
-JSONL, one file a day, gzipped after a day, and expired after `HISTORY_MAX_DAYS`.
+continuously for the P2P feed. That history is yours: plain JSONL, one file a day, gzipped
+after a day, and expired after `HISTORY_MAX_DAYS`.
+
+Two of those files are worth knowing about before you install anything. `dnet-*.jsonl` holds
+every message the node sent or received **with the real address of the peer**, and
+`pulse-ids.json` is the map from those addresses to their pseudonyms and is not rotated,
+because the names have to stay stable. Both stay on your machine, neither is encrypted, and
+if `/var/log` goes into your backups they go with it. The threat model in
+[`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md) follows this properly.
 
 ## What is real in the picture and what is not
 
@@ -51,10 +58,11 @@ motion.
 
 ## It never handles a peer address
 
-Addresses are mapped to `p1`, `p2` and so on inside the server, before anything is
-serialised, so the browser cannot learn who your peers are and neither can anyone you show
-the page to. The map lives in `panel-ids.json` next to your logs so the names survive a
-restart.
+Addresses are mapped to `p1`, `p2` and so on **inside the collector**, on the machine that
+has them, before anything is sent. The map lives in `pulse-ids.json` next to your logs so the
+names survive a restart, and it never leaves that machine. The server drops any event whose
+peer name does not look like a pseudonym, so this does not rest on one function in one
+process.
 
 That matters more than it sounds, because a panel like this is a deanonymization surface and
 getting it wrong is easy. There is an open issue about the parts of it I have not fixed yet,
@@ -105,12 +113,7 @@ configuration died four syncs out of seven. The raw series are in `bench/results
 **Locally, which is the default.** Nothing leaves the machine.
 
 ```bash
-./bench/        does your node fit on this box?
-  bench.sh      one arm: same database, one environment, what it cost
-  snapshot.sh   the restore point every arm starts from
-  sampler.sh    memory every 5 s
-  results/      the series behind the measurements, and the raw run log
-install.sh
+./install.sh
 ```
 
 **Publishing to a server you run**, which is what I do, and which adds the only component
@@ -150,7 +153,7 @@ Everything is environment variables, in `/etc/darknode-export.env` for the colle
 | `HISTORY_MAX_DAYS` | how long to keep it |
 | `PORT` | the server |
 | `DARKSCOPE_TOKEN` | what collectors must present to push |
-| `DARKSCOPE_READ_TOKEN` | optional, if reading should not be open either |
+| `DARKSCOPE_READ_TOKEN` | optional, if reading should not be open either. **The bundled panel does not send it**, so with this set the page loads and stays empty unless something in front of the server adds the header |
 | `PEER_NODE_MAP` | JSON: which peer addresses are your own machines, so they are drawn as machines rather than as an anonymous peer on each side. The address never leaves the file |
 | `INGEST_URL`, `NODE_INGEST_TOKEN` | only if you are publishing |
 

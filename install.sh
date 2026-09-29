@@ -49,12 +49,21 @@ done
 
 # ---------- panel -------------------------------------------------------------
 
-say "panel → /usr/local/share/darkscope/"
+say "server + panel → /usr/local/share/darkscope/"
+[[ -f "$HERE/panel/dist/index.html" ]] || die "panel/dist is missing. It is committed, so
+either the clone is incomplete or it was removed. Rebuild with:
+      cd panel && npm install && npm run build"
 sudo install -d -m 755 /usr/local/share/darkscope
-sudo install -m 755 "$HERE/panel/serve.py"   /usr/local/share/darkscope/serve.py
-sudo install -m 644 "$HERE/panel/index.html" /usr/local/share/darkscope/index.html
-sudo install -m 644 "$HERE/panel/app.js"     /usr/local/share/darkscope/app.js
-sudo install -m 644 "$HERE/panel/darkscope-panel.service" /etc/systemd/system/darkscope-panel.service
+sudo install -m 755 "$HERE/server/server.py" /usr/local/share/darkscope/server.py
+sudo cp -a "$HERE/panel/dist" /usr/local/share/darkscope/dist
+if [[ -f /etc/darkscope/machines.json ]]; then
+  say "/etc/darkscope/machines.json exists — leaving it alone"
+else
+  sudo install -d -m 755 /etc/darkscope
+  sudo install -m 644 "$HERE/server/machines.example.json" /etc/darkscope/machines.json
+  say "wrote /etc/darkscope/machines.json — edit it to name your machines"
+fi
+sudo install -m 644 "$HERE/server/darkscope.service" /etc/systemd/system/darkscope.service
 
 # ---------- config ------------------------------------------------------------
 
@@ -72,11 +81,11 @@ sudo systemctl daemon-reload
 say "starting the recorder and the panel"
 sudo systemctl enable --now dnet-record.service
 sudo systemctl enable --now darknode-export.timer
-sudo systemctl enable --now darkscope-panel.service
+sudo systemctl enable --now darkscope.service
 
 sleep 2
 ok=1
-for s in dnet-record darkscope-panel; do
+for s in dnet-record darkscope; do
   state="$(systemctl is-active "$s" || true)"
   printf '  %-18s %s\n' "$s" "$state"
   [[ "$state" == "active" ]] || ok=0
