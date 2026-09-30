@@ -126,9 +126,12 @@ the environment actually in force before it starts.
   1 of 1, and jemalloc **7 of 7** including the tuned arm — nineteen arms over 23, 25 and 29
   September. Outcome lines are in `runs.log` for the second sitting and `runs-2026-09-29.tsv`
   for the third. **The first sitting predates this rig and has no outcome log**; what is here
-  is its unlabelled five-second memory series, `mem-5s-runs.tsv.gz`, in which the arms are
-  seven segments peaking at 3,463 / 3,417 / 2,397 / 3,012 / 3,285 / 3,348 / 2,398 MiB — the
-  five above 3 GiB are the default allocator and two of them were killed.
+  is its unlabelled five-second memory series, `mem-5s-runs.tsv.gz`, which holds **seven of
+  that sitting's nine arms** as segments peaking at 3,463 / 3,417 / 2,397 / 3,012 / 3,285 /
+  3,348 / 2,398 MiB. The five above 3 GiB are the default allocator and two of them were
+  killed; the two below are jemalloc. The sitting's other two jemalloc arms are in my own
+  run notes rather than in this repository, so jemalloc's count for 23-S is the one figure
+  above that cannot be recounted from these files.
 - **Network figures are machine-wide**, taken from the interface counters, because
   `/proc/<pid>/net` is a namespace rather than a process. On a machine whose only job is the
   node it is a fair proxy, and it is not a per-process measurement.
