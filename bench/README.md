@@ -2,8 +2,9 @@
 
 Measuring what it costs a `darkfid` node to stay on the chain.
 
-Every result below is reproducible with the scripts in this directory. The raw series and
-run logs are in [`results/`](results/).
+Every result below is reproducible with the scripts in this directory and the series in
+[`results/`](results/). The one exception is the per-call split, which is read off the node's
+own journal and is marked where it appears.
 
 ## Results
 
@@ -11,7 +12,7 @@ run logs are in [`results/`](results/).
 same restored database, same 4 GB x86 VPS, 29 September 2026, `darkfid 0.5.0` built 25
 September, fjall backend.
 
-| configuration | outcome | wall | blocks | peak anon | held after | ms/block |
+| configuration | outcome | wall² | blocks | peak anon² | held after | ms/block |
 |---|---|---|---|---|---|---|
 | glibc, as it ships | **killed at 64,721** | 481 s | 163 | 3,101 MiB | — | 2,951 |
 | `LD_PRELOAD` jemalloc | passed | 669 s | 477 | 2,388 MiB | 898 MiB | **1,403** |
@@ -19,10 +20,16 @@ September, fjall backend.
 
 ¹ `MALLOC_CONF=background_thread:true,dirty_decay_ms:0,muzzy_decay_ms:0`
 
+² **Two instruments run over these arms and they do not agree, so both are in `results/`.**
+`wall` and `ms/block` are counted from the first height the node reported after the restart
+to the last sample, which is what `phases.py` prints from `phases-*.tsv.gz`;
+`runs-2026-09-29.tsv` times the same arms from `systemctl start` and reads 661 / 882 / 1,002 s.
+`peak anon` above is the rig's, polled every 20 s; the phase sampler polls every 5 s, catches
+3,395 / 2,417 / 2,377 MiB, and is the better instrument for a peak.
+
 **Tuning jemalloc did not pay off in this run.** Returning pages to the kernel immediately
-buys 40 MiB of peak and costs **18% more time per block**, so the default configuration seems
-to be the most optimal of the three. These are three points in a large space and I have not
-swept it.
+buys 37 MiB of peak and costs **18% more time per block**, so of the three the default is the
+one to run. These are three points in a large space and I have not swept it.
 
 **Where the wall clock goes**, from cgroup `cpu.stat`, `io.pressure` and `/proc/<pid>/io`
 over the same three runs:
@@ -32,15 +39,16 @@ over the same three runs:
 | CPU busy, 2 cores | 49% | 53% | 54% |
 | stalled on block I/O | 8.5% of wall | 5.0% | 4.1% |
 | received per block | 58 KiB | 32 KiB | 35 KiB |
-| written per block | 5.9 MiB | 7.2 MiB | 7.7 MiB |
+| written per block | 5.8 MiB | 7.1 MiB | 7.7 MiB |
 
 **It is not the network and it is not waiting on disk.** The node receives about 32 KiB per
 block and spends the wall clock computing. Two things follow and both are worth a look:
 
-- **Write amplification is roughly 200×**: 32 KiB in, 7.2 MiB out to disk, per block.
+- **Write amplification is roughly 230×**: 32 KiB in, 7.1 MiB out to disk, per block.
 - **52% of a contract call is starting the WASM runtime**, 66.9 ms of a 129 ms `PoWRewardV1`
-  call, n = 14,048, decomposed from the journal's microsecond stamps. The module is
-  recompiled on every call, so a sync from genesis compiles the same contract 73,038 times.
+  call, n = 14,048, decomposed from the journal's microsecond stamps rather than from
+  `results/`. The module is recompiled on every call, so a sync from genesis compiles the
+  same contract 73,038 times.
 
 **Keeping the compiled module takes 19.5% off the wall clock** for the same stretch, same
 binary and same allocator. `module-cache.patch` is the change I used for that measurement.
@@ -69,13 +77,23 @@ which should be correct and has not been exercised.
 ./phases.py ~/darkfid-bench/phases-*.tsv
 ```
 
+The phase table above is that last command over the files in `results/`, which it reads
+gzipped as they are shipped:
+
+```bash
+CORES=2 ./phases.py results/phases-*.tsv.gz
+```
+
 Each arm appends a row to `runs.tsv` with the label, wall time, peak anon, anon at the end,
 outcome, CPU seconds and the environment that produced it.
 
 ## Why every arm restores the same database
 
-Of about 73,000 blocks on this chain, roughly four hundred — 64,400 to 64,800 — carry nearly
-all the contract calls, and that is where a small machine fails. An arm that starts at a
+This chain runs flat at **two contract calls per block**, the miner's reward, across all
+73,000 of them. It rises in one place: blocks **64,400 to 64,800 hold 2,044 calls against a
+baseline of 800** — the two busiest two-hundred-block buckets on the chain, against a next
+highest of 488, and **almost half of every call the chain carries above that baseline**
+(`results/wide-tx-200.tsv`). That is where a small machine fails. An arm that starts at a
 different height meets a different amount of that work, so without a common restore point the
 comparison is between starting points rather than between configurations.
 
@@ -103,9 +121,14 @@ the environment actually in force before it starts.
 - **Three configurations on x86 only.** The ARM board has no snapshot at a comparable height
   and making one means a full resync from genesis, so its curves in `results/` come from
   complete syncs rather than from this rig.
-- **Small n.** For the 4 GB box the logs hold: glibc 0 of 2 syncs completed,
-  `MALLOC_ARENA_MAX=1` 3 of 3, `MALLOC_ARENA_MAX=2` 1 of 1, jemalloc 1 of 1, plus the three
-  arms above. All of it is recountable from the files.
+- **Small n, and three sittings.** Counting every allocator arm this box has run: glibc as it
+  ships was **killed in 5 of 8**, `MALLOC_ARENA_MAX=1` survived 3 of 3, `MALLOC_ARENA_MAX=2`
+  1 of 1, and jemalloc **7 of 7** including the tuned arm — nineteen arms over 23, 25 and 29
+  September. Outcome lines are in `runs.log` for the second sitting and `runs-2026-09-29.tsv`
+  for the third. **The first sitting predates this rig and has no outcome log**; what is here
+  is its unlabelled five-second memory series, `mem-5s-runs.tsv.gz`, in which the arms are
+  seven segments peaking at 3,463 / 3,417 / 2,397 / 3,012 / 3,285 / 3,348 / 2,398 MiB — the
+  five above 3 GiB are the default allocator and two of them were killed.
 - **Network figures are machine-wide**, taken from the interface counters, because
   `/proc/<pid>/net` is a namespace rather than a process. On a machine whose only job is the
   node it is a fair proxy, and it is not a per-process measurement.
@@ -118,10 +141,10 @@ the environment actually in force before it starts.
 |---|---|
 | `runs-2026-09-29.tsv` | the three arms in the first table |
 | `phases-*.tsv.gz` | cpu, io stall, disk and network every 5 s through each of them |
-| `curve-*.tsv` | anon MiB against block height, one file per allocator |
+| `curve-*.tsv` | anon MiB against block height, one file per setting |
 | `wide-vps-*.tsv`, `wide-pi-*.tsv` | the same, genesis to tip, on each machine |
-| `tx-density-20.tsv`, `wide-tx-200.tsv` | contract calls per block |
-| `mem-5s-runs.tsv.gz` | raw 5-second sampler output covering the September runs |
+| `tx-density-20.tsv`, `wide-tx-200.tsv` | contract calls, in 20-block and 200-block buckets. The second covers the whole chain |
+| `mem-5s-runs.tsv.gz` | the 23 September sitting: 7.5 h of 5-second samples, unlabelled |
 | `runs.log` | the September run log, unedited. `PASO` is passed, `MUERTO` is killed, and three `wasm-*` rows lasting 20 seconds are failed starts rather than data |
 
 ## Requirements

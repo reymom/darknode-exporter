@@ -28,13 +28,17 @@ node is waiting for peers to send blocks, and no amount of local tuning moves it
 """
 from __future__ import annotations
 
+import gzip
 import os
 import sys
 
 
 def load(path: str) -> list[dict]:
+    # results/ ships these gzipped, so the tables in the README can be
+    # recomputed from the repo without unpacking anything first.
+    opener = gzip.open if path.endswith(".gz") else open
     rows = []
-    with open(path) as fh:
+    with opener(path, "rt") as fh:
         head = fh.readline().rstrip("\n").split("\t")
         for line in fh:
             v = line.rstrip("\n").split("\t")
@@ -99,7 +103,7 @@ def main() -> None:
         if len(rows) < 3:
             print(f"{os.path.basename(p)}: too few samples")
             continue
-        label = os.path.basename(p).replace("phases-", "").replace(".tsv", "")
+        label = os.path.basename(p).replace("phases-", "").replace(".tsv", "").replace(".gz", "")
         wall = rows[-1]["epoch"] - rows[0]["epoch"]
         cpu = delta(rows, "cpu_usec") / 1e6
         io_stall = delta(rows, "io_stall_usec") / 1e6

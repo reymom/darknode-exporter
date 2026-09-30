@@ -21,7 +21,7 @@ only need npm if you want to change the graph.
 
 I ran nodes for three months and a few things only became visible once I could watch them:
 the memory was tracking whatever ceiling it was given rather than what it needed, a four
-gigabyte host fails in the same four hundred blocks every time, and one transaction of mine
+gigabyte host that fails, fails in the same four hundred blocks, and one transaction of mine
 announced which machine it had come from.
 
 Failure modes can appear on any hardware and can go underseen, and they are easier to miss on
@@ -106,7 +106,7 @@ install.sh
 [`bench/`](bench/) is the rig that found the memory behaviour in the first place. It restores
 the same chain database, changes one environment variable, and sees whether the node survives
 the four hundred blocks that carry the transactions. On a four gigabyte server the default
-configuration died four syncs out of seven. The raw series are in `bench/results/`.
+configuration was killed in five syncs out of eight. The raw series are in `bench/results/`.
 
 ## Running it
 
