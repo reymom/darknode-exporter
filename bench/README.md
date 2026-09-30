@@ -89,13 +89,13 @@ outcome, CPU seconds and the environment that produced it.
 
 ## Why every arm restores the same database
 
-This chain runs flat at **two contract calls per block**, the miner's reward, across all
-73,000 of them. It rises in one place: blocks **64,400 to 64,800 hold 2,044 calls against a
-baseline of 800** — the two busiest two-hundred-block buckets on the chain, against a next
-highest of 488, and **almost half of every call the chain carries above that baseline**
-(`results/wide-tx-200.tsv`). That is where a small machine fails. An arm that starts at a
-different height meets a different amount of that work, so without a common restore point the
-comparison is between starting points rather than between configurations.
+This chain runs flat at **one contract call per block**, the miner's reward, across all
+73,000 of them. It rises in one place: blocks **64,400 to 64,800 hold 1,022 calls against a
+baseline of 400** — the two busiest two-hundred-block buckets on the chain, 488 and 534
+against a next highest of 244, and **almost half of every call the chain carries above that
+baseline**. That is where a small machine fails. An arm that starts at a different height
+meets a different amount of that work, so without a common restore point the comparison is
+between starting points rather than between configurations.
 
 `snapshot.sh` handles the copying. Finding the stretch on another chain is a matter of
 looking for where calls per block jump, which `collector/darkfid-blocks.sh` logs.
@@ -143,7 +143,7 @@ the environment actually in force before it starts.
 | `phases-*.tsv.gz` | cpu, io stall, disk and network every 5 s through each of them |
 | `curve-*.tsv` | anon MiB against block height, one file per setting |
 | `wide-vps-*.tsv`, `wide-pi-*.tsv` | the same, genesis to tip, on each machine |
-| `tx-density-20.tsv`, `wide-tx-200.tsv` | contract calls, in 20-block and 200-block buckets. The second covers the whole chain |
+| `tx-density-20.tsv`, `wide-tx-200.tsv` | contract calls, in 20-block and 200-block buckets. The second covers the whole chain, and **every count in it is doubled**: two copies of the block logger ran while it was collected, so halve it |
 | `mem-5s-runs.tsv.gz` | the 23 September sitting: 7.5 h of 5-second samples, unlabelled |
 | `runs.log` | the September run log, unedited. `PASO` is passed, `MUERTO` is killed, and three `wasm-*` rows lasting 20 seconds are failed starts rather than data |
 
